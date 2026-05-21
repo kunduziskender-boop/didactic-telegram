@@ -1,0 +1,19 @@
+{
+  "name": "didactic-telegram",
+  "version": "1.0.0",
+  "description": "Telegram bot for daily English speaking practice",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "node-cron": "^3.0.3",
+    "openai": "^4.77.0",
+    "telegraf": "^4.16.3"
+  }
+}

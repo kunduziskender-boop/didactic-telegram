@@ -1,0 +1,9 @@
+node_modules/
+.env
+data/audio/
+data/bot.db
+data/bot.db-*
+data/store.json
+data/store.json.migrated
+*.log
+.DS_Store
