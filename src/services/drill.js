@@ -4,6 +4,8 @@ const { taskDeliveredKeyboard, reminderKeyboard, awaitingVoiceKeyboard } = requi
 const { synthesizeTask } = require('./pipeline');
 const { generatePrepareHints } = require('./llm');
 const { formatPrepareHints } = require('./feedback');
+const { sendCorrectedAudioToUser } = require('./telegramAudio');
+const { withTyping } = require('./typing');
 
 /**
  * @param {import('telegraf').Telegram} telegram
@@ -49,7 +51,10 @@ async function sendDailyTask(telegram, telegramId, options = {}) {
   try {
     const audioPath = await synthesizeTask(telegramId, task);
     if (audioPath && fs.existsSync(audioPath)) {
-      await telegram.sendVoice(telegramId, { source: fs.createReadStream(audioPath) });
+      const sent = await sendCorrectedAudioToUser(telegram, telegramId, audioPath, { title: 'Daily task' });
+      if (!sent) {
+        await telegram.sendMessage(telegramId, '🔊 (Не удалось отправить аудио — прочитай текст задания выше)');
+      }
     } else {
       await telegram.sendMessage(telegramId, '🔊 (TTS недоступен — прочитай текст задания выше)');
     }
@@ -102,7 +107,10 @@ async function handleReady(ctx) {
   setState(telegramId, DrillStates.AWAITING_VOICE);
   await ctx.answerCbQuery();
 
-  const hints = await generatePrepareHints(task.promptEn, user.level);
+  const hints = await withTyping(ctx.telegram, ctx.chat.id, () => generatePrepareHints(
+    task.promptEn,
+    user.level,
+  ));
   await ctx.reply(formatPrepareHints(hints), {
     parse_mode: 'Markdown',
     ...awaitingVoiceKeyboard(),

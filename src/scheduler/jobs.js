@@ -3,6 +3,7 @@ const config = require('../config');
 const store = require('../store');
 const { sendDailyTask } = require('../services/drill');
 const { generateWeeklyExercise } = require('../services/llm');
+const { withTyping } = require('../services/typing');
 const { reminderKeyboard } = require('../keyboards');
 const { DrillStates, getState } = require('../fsm/manager');
 
@@ -25,11 +26,15 @@ function startScheduler(bot) {
     timezone: config.timezone,
   });
 
+  cron.schedule('0 15 * * *', () => sendVocabReminders(bot), {
+    timezone: config.timezone,
+  });
+
   console.log(
     `Scheduler started (${config.timezone}): `
     + `morning ${config.morningDrillHour}:${String(config.morningDrillMinute).padStart(2, '0')}, `
     + `reminder ${config.eveningReminderHour}:${String(config.eveningReminderMinute).padStart(2, '0')}, `
-    + 'weekly Sun 10:00',
+    + 'vocab 15:00, weekly Sun 10:00',
   );
 }
 
@@ -89,7 +94,11 @@ async function sendWeeklyReviews(bot) {
         continue;
       }
 
-      const { summary, miniExercise } = await generateWeeklyExercise(topErrors);
+      const { summary, miniExercise } = await withTyping(
+        bot.telegram,
+        user.telegramId,
+        () => generateWeeklyExercise(topErrors),
+      );
       store.saveWeeklyReview(user.telegramId, {
         weekStart: weekStart.toISOString().slice(0, 10),
         topErrors,
@@ -109,6 +118,25 @@ async function sendWeeklyReviews(bot) {
       );
     } catch (err) {
       console.error(`Weekly review failed for ${user.telegramId}:`, err.message);
+    }
+  }
+}
+
+async function sendVocabReminders(bot) {
+  for (const telegramId of store.getUsersWithDueVocab()) {
+    try {
+      const stats = store.getVocabStats(telegramId);
+      if (!stats.due) continue;
+
+      await bot.telegram.sendMessage(
+        telegramId,
+        `📖 **Context Words** — ${stats.due} слов(а) ждут повторения.\n\n`
+        + 'Слова показываются **в контексте фраз**, не списком.\n'
+        + 'Команда: /words',
+        { parse_mode: 'Markdown' },
+      );
+    } catch (err) {
+      console.error(`Vocab reminder failed for ${telegramId}:`, err.message);
     }
   }
 }

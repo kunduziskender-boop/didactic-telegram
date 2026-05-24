@@ -1,5 +1,5 @@
 const store = require('../store');
-const { OnboardingStates, DrillStates } = require('./states');
+const { OnboardingStates, DrillStates, DialogueStates } = require('./states');
 
 function getState(telegramId) {
   return store.getFsmState(telegramId);
@@ -30,6 +30,11 @@ function resetToIdle(telegramId) {
 
 function canAcceptVoice(telegramId, state) {
   if (state === DrillStates.PROCESSING) return false;
+  if (state === DrillStates.CORRECTION_SHOWN || state === DrillStates.SHADOW_ACTIVE) {
+    return false;
+  }
+  if (state === DialogueStates.ACTIVE) return true;
+  if (state === DialogueStates.PROCESSING) return false;
   if (
     state === DrillStates.AWAITING_VOICE
     || state === DrillStates.AWAITING_FOLLOWUP
@@ -39,13 +44,19 @@ function canAcceptVoice(telegramId, state) {
   return false;
 }
 
+function isDialogueActive(state) {
+  return state === DialogueStates.ACTIVE || state === DialogueStates.PROCESSING;
+}
+
 module.exports = {
   OnboardingStates,
   DrillStates,
+  DialogueStates,
   getState,
   setState,
   isOnboarding,
   isDrillActive,
+  isDialogueActive,
   resetToIdle,
   canAcceptVoice,
 };

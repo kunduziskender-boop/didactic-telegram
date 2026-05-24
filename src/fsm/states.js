@@ -13,4 +13,9 @@ const DrillStates = {
   SHADOW_ACTIVE: 'shadow_active',
 };
 
-module.exports = { OnboardingStates, DrillStates };
+const DialogueStates = {
+  ACTIVE: 'dialogue_active',
+  PROCESSING: 'dialogue_processing',
+};
+
+module.exports = { OnboardingStates, DrillStates, DialogueStates };

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const { getTtsInstructions } = require('../data/englishLocale');
 const { getOpenAIClient, isRecoverableAiError } = require('./openaiClient');
 const { ensureDir } = require('./audio');
 
@@ -43,11 +44,16 @@ async function synthesize(text, outputPath) {
   if (!openai) return null;
 
   try {
-    const mp3 = await openai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'alloy',
+    const speechParams = {
+      model: config.openaiTtsModel,
+      voice: config.openaiTtsVoice,
       input: text,
-    });
+    };
+    const instructions = getTtsInstructions(config.englishVariant);
+    if (instructions && config.openaiTtsModel.includes('mini-tts')) {
+      speechParams.instructions = instructions;
+    }
+    const mp3 = await openai.audio.speech.create(speechParams);
     const buffer = Buffer.from(await mp3.arrayBuffer());
     fs.writeFileSync(outputPath, buffer);
     return outputPath;

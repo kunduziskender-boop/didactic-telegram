@@ -5,20 +5,34 @@
  */
 function formatFluencyFeedback(result, options = {}) {
   if (options.isFollowUp) {
+    const hasIssues = (result.issues?.length ?? 0) > 0;
+    const offTopic = result.relevance === 'off_topic' || result.relevance === 'nonsense';
     const lines = [
-      `✅ ${result.praise}`,
-      '',
-      `📝 Ваш ответ:\n${result.transcript}`,
-      '',
-      `✏️ Как можно сказать естественнее:\n${result.correctedText}`,
+      hasIssues || offTopic ? `📝 ${result.praise}` : `✅ ${result.praise}`,
     ];
-    if (result.issues?.length) {
-      lines.push('', '🔧 Исправления:');
+
+    if (offTopic) {
+      lines.push('', `⚠️ ${result.relevanceNoteRu || 'Ответ не по теме follow-up вопроса.'}`);
+    } else if (result.relevance === 'partial') {
+      lines.push('', `⚠️ ${result.relevanceNoteRu || 'Ответ слишком короткий или неполный.'}`);
+    }
+
+    lines.push('', `📝 Ваш ответ:\n${result.transcript}`, '');
+
+    if (hasIssues) {
+      lines.push('🔧 Исправления:');
       for (const issue of result.issues) {
         const orig = issue.original || issue.wrong;
         const fixed = issue.corrected || issue.right;
         lines.push(`• "${orig}" → "${fixed}"${issue.noteRu || issue.note_ru ? ` — ${issue.noteRu || issue.note_ru}` : ''}`);
       }
+      lines.push('');
+    }
+
+    lines.push(`✏️ Как можно сказать естественнее:\n${result.correctedText}`);
+
+    if (result.mainImprovement) {
+      lines.push('', `💡 Главное улучшение:\n${result.mainImprovement}`);
     }
     if (options.voiceOnly) {
       lines.push('', 'ℹ️ Follow-up по голосу без распознавания — напиши ответ текстом для точной проверки.');
@@ -26,16 +40,28 @@ function formatFluencyFeedback(result, options = {}) {
     return lines.join('\n').trim();
   }
 
-  if (result.noTranscript || (options.voiceOnly && !result.transcript?.trim())) {
+  if (result.noTranscript || (options.voiceOnly && !result.transcript?.trim()) || result.sttUnreliable || result.sttFailed) {
+    const heardLine = result.sttHeard
+      ? `\n\n🎧 Whisper услышал только: «${result.sttHeard}»\nСкорее всего это **ошибка распознавания**, а не твой ответ.`
+      : '';
+    const failLine = result.sttFailed
+      ? '\n\n🎧 Не удалось распознать аудио. Запиши **ещё раз громче** (5–15 сек) или напиши **текстом**.'
+      : '';
+    const example = result.correctedText?.trim()
+      || 'I want to travel to Japan because I love the culture and the food there.';
     const lines = [
-      `✅ ${result.praise}`,
+      `✅ ${result.praise || 'Спасибо за голосовой!'}`,
       '',
-      'ℹ️ Без распознавания речи бот не слышит твои слова.',
-      result.noteRu || 'Напиши свой ответ текстом на английском — тогда проверим именно его.',
+      result.sttFailed
+        ? 'ℹ️ Аудио не распозналось — бот **не оценивает** это как неправильный ответ.'
+        : 'ℹ️ Голос распознан ненадёжно — бот **не оценивает** такой ответ как неправильный.',
+      heardLine,
+      failLine,
+      result.noteRu || '',
       '',
       '📘 Пример хорошего ответа:',
-      result.correctedText,
-    ];
+      example,
+    ].filter(Boolean);
 
     if (result.typicalMistakes?.length) {
       lines.push('', '⚠️ Типичные ошибки на этом задании:');
@@ -58,14 +84,21 @@ function formatFluencyFeedback(result, options = {}) {
   }
 
   const hasIssues = (result.issues?.length ?? 0) > 0;
-  const header = hasIssues
+  const offTopic = result.relevance === 'off_topic' || result.relevance === 'nonsense';
+  const header = hasIssues || offTopic
     ? `📝 ${result.praise}`
     : `✅ ${result.praise}`;
   const lines = [header, ''];
 
+  if (offTopic) {
+    lines.push(`⚠️ ${result.relevanceNoteRu || 'Ответ не по теме задания.'}`, '');
+  } else if (result.relevance === 'partial') {
+    lines.push(`⚠️ ${result.relevanceNoteRu || 'Ответ слишком короткий или неполный — раскрой мысль подробнее.'}`, '');
+  }
+
   if (hasIssues) {
     lines.push('📌 Есть ошибки — это нормально, смотри правки ниже.', '');
-  } else if (result.quality === 'strong') {
+  } else if (result.quality === 'strong' && !offTopic) {
     lines.push('📌 Ответ сильный для твоего уровня!', '');
   }
 
@@ -142,8 +175,8 @@ function formatPrepareHints(hints) {
 
   lines.push(
     '',
-    '🎤 Запиши голосовой ответ на английском (30–60 сек).',
-    '✍️ Или **напиши ответ текстом** — тогда бот проверит именно его (особенно если нет Whisper).',
+    '🎤 Запиши голосовой ответ на английском (**5–15 секунд**, не короче!).',
+    '✍️ Или **напиши ответ текстом** — тогда бот проверит именно его (особенно если Whisper ошибётся).',
   );
   return lines.join('\n');
 }

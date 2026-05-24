@@ -37,6 +37,12 @@ if not exist ".env" (
   exit /b 1
 )
 
+where ffmpeg >nul 2>&1
+if errorlevel 1 (
+  echo [ПРЕДУПРЕЖДЕНИЕ] ffmpeg не установлен — голос распознаётся, но качество может быть ниже.
+  echo Скачай: https://www.gyan.dev/ffmpeg/builds/ ^(ffmpeg-release-essentials.zip^)
+)
+
 echo Запускаю бота...
 echo Остановка: Ctrl+C
 echo.

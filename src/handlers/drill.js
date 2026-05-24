@@ -6,12 +6,35 @@ const { deliverDailyTask, handleReady, handleSkip, sendDailyTask } = require('..
 const { processVoiceResponse, processTextResponse, processFollowUpVoice, processFollowUpText } = require('../services/pipeline');
 const { generateFollowUpQuestion } = require('../services/llm');
 const { formatFluencyFeedback, formatFollowUpPrompt } = require('../services/feedback');
+const { withTyping } = require('../services/typing');
+const { synthesize } = require('../services/tts');
+const { pathsForSession } = require('../services/audio');
+const { sendCorrectedAudio } = require('../services/telegramAudio');
+const { autoSaveFromDrill } = require('./vocab');
 
 function extractVoiceFile(ctx) {
   const msg = ctx.message;
-  if (msg.voice) return { fileId: msg.voice.file_id, kind: 'voice' };
-  if (msg.audio) return { fileId: msg.audio.file_id, kind: 'audio' };
+  if (msg.voice) {
+    return { fileId: msg.voice.file_id, kind: 'voice', duration: msg.voice.duration };
+  }
+  if (msg.audio) {
+    return { fileId: msg.audio.file_id, kind: 'audio', duration: msg.audio.duration };
+  }
   return null;
+}
+
+async function rejectShortVoice(ctx, voiceFile) {
+  const { MIN_VOICE_DURATION_SEC } = require('../services/transcriptQuality');
+  const duration = voiceFile.duration ?? 0;
+  if (duration >= MIN_VOICE_DURATION_SEC) return false;
+
+  await ctx.reply(
+    `🎤 Запись слишком короткая (${duration || '?'} сек).\n\n`
+    + `Запиши ответ **5–15 секунд** — одним дыханием, по теме задания.\n`
+    + '✍️ Или напиши ответ **текстом** — так проверка будет точнее.',
+    { parse_mode: 'Markdown' },
+  );
+  return true;
 }
 
 async function showFinishOptions(ctx) {
@@ -27,7 +50,9 @@ async function showFinishOptions(ctx) {
       })
       .join('\n');
     await ctx.reply(
-      `📚 Сохрани фразы на сегодня:\n${list}\n\nВсе фразы — команда /phrases`,
+      `📚 Сохрани фразы на сегодня:\n${list}\n\n`
+      + 'Они автоматически попадут в словарь после «Готово».\n'
+      + 'Повторение: /words · Все фразы: /phrases',
     );
   }
 
@@ -39,7 +64,11 @@ async function showFinishOptions(ctx) {
 }
 
 async function sendFollowUpRound(ctx, taskPrompt, transcript, level) {
-  const followUp = await generateFollowUpQuestion(taskPrompt, transcript, level);
+  const followUp = await withTyping(ctx.telegram, ctx.chat.id, () => generateFollowUpQuestion(
+    taskPrompt,
+    transcript,
+    level,
+  ));
   store.updateSessionResponse(ctx.from.id, {
     followUpPromptEn: followUp.follow_up_en,
     followUpPromptRu: followUp.follow_up_ru,
@@ -116,22 +145,31 @@ async function handleSkipFollowUp(ctx) {
 
 async function deliverMainResult(ctx, result, task, user) {
   if (result.hasCorrectedAudio && result.correctedAudioPath) {
-    await ctx.replyWithVoice({ source: fs.createReadStream(result.correctedAudioPath) });
+    await sendCorrectedAudio(ctx, result.correctedAudioPath);
   }
 
   await ctx.reply(
     formatFluencyFeedback(result, {
-      voiceOnly: result.noTranscript,
+      voiceOnly: result.noTranscript || result.sttUnreliable || result.sttFailed,
       usedDemo: result.usedDemo,
     }),
   );
 
-  const needsTextCheck = result.noTranscript || (!result.transcript?.trim() && result.voiceOnly);
+  const needsTextCheck = result.noTranscript
+    || result.sttUnreliable
+    || result.sttFailed
+    || (!result.transcript?.trim() && result.voiceOnly);
   if (needsTextCheck) {
     setState(ctx.from.id, DrillStates.AWAITING_VOICE);
+    const extra = result.sttHeard
+      ? `\n\n⚠️ Whisper услышал только «${result.sttHeard}».`
+      : result.sttFailed
+        ? '\n\n⚠️ Аудио не распозналось — попробуй записать громче или напиши текстом.'
+        : '';
     await ctx.reply(
-      '✍️ Отправь свой ответ текстом на английском — тогда проверим ошибки по-настоящему.\n\n'
-      + 'Или нажми «Пропустить проверку», чтобы перейти к follow-up.',
+      '✍️ Отправь свой ответ текстом на английском — тогда проверим ошибки по-настоящему.'
+      + extra
+      + '\n\nИли нажми «Пропустить проверку», чтобы перейти к follow-up.',
       textCheckKeyboard(),
     );
     return;
@@ -155,6 +193,10 @@ async function handleMainVoice(ctx, voiceFile) {
   const session = store.getTodaySession(telegramId);
   const task = store.getTaskById(session?.taskId);
 
+  if (await rejectShortVoice(ctx, voiceFile)) {
+    return;
+  }
+
   setState(telegramId, DrillStates.PROCESSING);
   store.updateTodaySession(telegramId, { status: 'processing' });
 
@@ -168,6 +210,7 @@ async function handleMainVoice(ctx, voiceFile) {
       fileId: voiceFile.fileId,
       taskPrompt: task.promptEn,
       level: user.level,
+      durationSec: voiceFile.duration,
     });
 
     await ctx.telegram.editMessageText(
@@ -176,10 +219,6 @@ async function handleMainVoice(ctx, voiceFile) {
       undefined,
       '✅ Готово!',
     );
-
-    if (result.hasCorrectedAudio && result.correctedAudioPath) {
-      await ctx.replyWithVoice({ source: fs.createReadStream(result.correctedAudioPath) });
-    }
 
     await deliverMainResult(ctx, result, task, user);
   } catch (err) {
@@ -210,6 +249,10 @@ async function handleFollowUpVoice(ctx, voiceFile) {
     return;
   }
 
+  if (await rejectShortVoice(ctx, voiceFile)) {
+    return;
+  }
+
   setState(telegramId, DrillStates.PROCESSING);
   const statusMsg = await ctx.reply('⏳ Слушаю ваш follow-up...');
 
@@ -220,6 +263,7 @@ async function handleFollowUpVoice(ctx, voiceFile) {
       fileId: voiceFile.fileId,
       followUpPrompt,
       level: user.level,
+      durationSec: voiceFile.duration,
     });
 
     await ctx.telegram.editMessageText(
@@ -233,6 +277,9 @@ async function handleFollowUpVoice(ctx, voiceFile) {
       isFollowUp: true,
       voiceOnly: result.voiceOnly,
     }));
+    if (result.hasCorrectedAudio && result.correctedAudioPath) {
+      await sendCorrectedAudio(ctx, result.correctedAudioPath);
+    }
     await showFinishOptions(ctx);
   } catch (err) {
     console.error('Follow-up pipeline error:', err);
@@ -263,6 +310,7 @@ async function handleFollowUpText(ctx, text) {
 
   try {
     const result = await processFollowUpText({
+      telegram: ctx.telegram,
       telegramId,
       text,
       followUpPrompt,
@@ -298,6 +346,7 @@ async function handleMainText(ctx, text) {
 
   try {
     const result = await processTextResponse({
+      telegram: ctx.telegram,
       telegramId,
       text,
       taskPrompt: task.promptEn,
@@ -367,9 +416,11 @@ async function handleVoice(ctx) {
   const session = store.getTodaySession(telegramId);
 
   if (!canAcceptVoice(telegramId, state)) {
-    const hint = session?.status === 'completed'
-      ? 'Сегодняшнее задание уже выполнено. Завтра будет новое — или /drill для повторной практики.'
-      : 'Нажми /drill → «Готов» → запиши голосовое.';
+    const hint = state === DrillStates.SHADOW_ACTIVE || state === DrillStates.CORRECTION_SHOWN
+      ? 'Сейчас режим Shadow — просто слушай аудио и повторяй вслух. Когда закончишь, нажми «Готово».'
+      : session?.status === 'completed'
+        ? 'Сегодняшнее задание уже выполнено. Завтра будет новое — или /drill для повторной практики.'
+        : 'Нажми /drill → «Готов» → запиши голосовое.';
     console.log(`Voice rejected for ${telegramId}: state=${state}, session=${session?.status ?? 'none'}`);
     await ctx.reply(`Сейчас не время для голосового ответа.\n\n${hint}`);
     return;
@@ -405,18 +456,58 @@ async function handleVoice(ctx) {
   await handleMainVoice(ctx, voiceFile);
 }
 
+async function resolveShadowAudio(telegramId, session) {
+  const response = session?.response;
+  if (!response) return null;
+
+  const candidates = [
+    response.followUpCorrectedAudioPath,
+    response.correctedAudioPath,
+  ].filter(Boolean);
+
+  for (const audioPath of candidates) {
+    if (fs.existsSync(audioPath)) return audioPath;
+  }
+
+  const text = response.followUpCorrectedText || response.correctedText;
+  if (!text) return null;
+
+  const dateKey = session.sessionDate || store.todayKey();
+  const paths = pathsForSession(telegramId, dateKey);
+  const outPath = response.followUpCorrectedText
+    ? paths.followUpCorrected
+    : paths.corrected;
+
+  const ttsPath = await synthesize(text, outPath);
+  if (!ttsPath || !fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    return null;
+  }
+
+  const patch = response.followUpCorrectedText
+    ? { followUpCorrectedAudioPath: outPath }
+    : { correctedAudioPath: outPath };
+  store.updateSessionResponse(telegramId, patch);
+  return outPath;
+}
+
 async function handleShadow(ctx) {
   const telegramId = ctx.from.id;
   const session = store.getTodaySession(telegramId);
-  const response = session?.response;
 
-  if (!response?.correctedAudioPath || !fs.existsSync(response.correctedAudioPath)) {
-    await ctx.answerCbQuery('Аудио недоступно');
+  await ctx.answerCbQuery();
+  const audioPath = await resolveShadowAudio(telegramId, session);
+
+  if (!audioPath) {
     await ctx.reply('Аудио исправленного варианта недоступно. Прочитай текст вслух.');
   } else {
-    await ctx.answerCbQuery();
     await ctx.reply('🎧 Shadow Practice: прослушай и повтори вслух за мной. Без проверки — просто тренируй произношение!');
-    await ctx.replyWithVoice({ source: fs.createReadStream(response.correctedAudioPath) });
+    const sent = await sendCorrectedAudio(ctx, audioPath);
+    if (!sent) {
+      const text = session?.response?.followUpCorrectedText || session?.response?.correctedText;
+      if (text) {
+        await ctx.reply(`🔊 Прочитай вслух:\n\n${text}`);
+      }
+    }
   }
 
   store.updateSessionResponse(telegramId, { shadowDone: true });
@@ -437,10 +528,15 @@ async function handleDone(ctx) {
     setState(telegramId, DrillStates.IDLE);
 
     const streak = store.getStreak(telegramId);
+    const savedWords = session ? autoSaveFromDrill(telegramId, session) : 0;
     await ctx.answerCbQuery();
+    const vocabNote = savedWords > 0
+      ? `\n📖 +${savedWords} фраз(а) в словарь. Повтори: /words`
+      : '';
     await ctx.reply(
       `Отличная работа! 🔥 Стрик: ${streak?.currentStreak ?? 0} дней.\n`
-      + 'Сегодня ты потренировал(а) живой диалог — так и строится уверенность!',
+      + 'Сегодня ты потренировал(а) живой диалог — так и строится уверенность!'
+      + vocabNote,
     );
   } else {
     await ctx.answerCbQuery('Сначала заверши follow-up или пропусти его');
@@ -452,4 +548,5 @@ module.exports = {
   handleCallback,
   handleVoice,
   handleDrillText,
+  extractVoiceFile,
 };

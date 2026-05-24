@@ -3,8 +3,10 @@ const { message } = require('telegraf/filters');
 const config = require('./config');
 const { CB } = require('./keyboards');
 const { handleStart, handleChangeLevel, handleLevelCallback, handleTopicCallback } = require('./handlers/onboarding');
-const { handleDrillCommand, handleCallback, handleVoice, handleDrillText } = require('./handlers/drill');
+const { handleDrillCommand, handleCallback, handleVoice, handleDrillText, extractVoiceFile } = require('./handlers/drill');
 const { handleStats, handleHelp, handleWeeklyTest, handlePhrases } = require('./handlers/commands');
+const { handleWordsCommand, handleVocabCallback } = require('./handlers/vocab');
+const { handleTalkCommand, handleTalkCallback, handleDialogueMessage, handleDialogueVoice } = require('./handlers/dialogue');
 const { startScheduler } = require('./scheduler/jobs');
 const { registerBotCommands } = require('./bot/commands');
 
@@ -34,6 +36,8 @@ function createBot() {
   bot.command('drill', handleDrillCommand);
   bot.command('stats', handleStats);
   bot.command('phrases', handlePhrases);
+  bot.command('words', handleWordsCommand);
+  bot.command('talk', handleTalkCommand);
   bot.command('help', handleHelp);
   bot.command('weekly', handleWeeklyTest);
 
@@ -45,9 +49,23 @@ function createBot() {
     handleCallback,
   );
 
-  bot.on(message('voice'), handleVoice);
-  bot.on(message('audio'), handleVoice);
-  bot.on(message('text'), handleDrillText);
+  bot.action(/^vocab:/, handleVocabCallback);
+  bot.action(/^talk:/, handleTalkCallback);
+
+  bot.on(message('voice'), async (ctx) => {
+    const voiceFile = extractVoiceFile(ctx);
+    if (voiceFile && await handleDialogueVoice(ctx, voiceFile)) return;
+    return handleVoice(ctx);
+  });
+  bot.on(message('audio'), async (ctx) => {
+    const voiceFile = extractVoiceFile(ctx);
+    if (voiceFile && await handleDialogueVoice(ctx, voiceFile)) return;
+    return handleVoice(ctx);
+  });
+  bot.on(message('text'), async (ctx) => {
+    if (await handleDialogueMessage(ctx, ctx.message?.text?.trim())) return;
+    return handleDrillText(ctx);
+  });
 
   bot.catch((err, ctx) => {
     console.error('Bot error:', err);
@@ -66,8 +84,9 @@ async function main() {
   console.log('AI mode:', config.demoMode
     ? 'DEMO'
     : [
-      config.deepseekApiKey ? 'DeepSeek LLM' : null,
-      config.sttEnabled ? 'Whisper STT' : 'STT off',
+      config.openaiLlmEnabled ? `OpenAI LLM (${config.llmModel})` : null,
+      config.deepseekLlmEnabled ? 'DeepSeek LLM' : null,
+      config.sttEnabled ? 'Whisper STT' : null,
       config.ttsEnabled ? 'OpenAI TTS' : null,
     ].filter(Boolean).join(' + ') || 'no AI keys');
 

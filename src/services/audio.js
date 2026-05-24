@@ -6,6 +6,16 @@ const config = require('../config');
 
 const execFileAsync = promisify(execFile);
 
+function resolveFfmpegPath() {
+  try {
+    const bundled = require('ffmpeg-static');
+    if (bundled && fs.existsSync(bundled)) return bundled;
+  } catch {
+    // optional dependency fallback
+  }
+  return 'ffmpeg';
+}
+
 function userDateDir(telegramId, dateKey) {
   return path.join(config.audioRoot, `user_${telegramId}`, dateKey);
 }
@@ -23,6 +33,7 @@ function pathsForSession(telegramId, dateKey) {
     responseOgg: path.join(dir, 'response.ogg'),
     responseWav: path.join(dir, 'response.wav'),
     corrected: path.join(dir, 'corrected.mp3'),
+    followUpCorrected: path.join(dir, 'follow_up_corrected.mp3'),
   };
 }
 
@@ -44,15 +55,16 @@ async function downloadTelegramFile(telegram, fileId, destPath) {
 }
 
 async function convertOggToWav(oggPath, wavPath) {
+  const ffmpeg = resolveFfmpegPath();
   try {
-    await execFileAsync('ffmpeg', [
+    await execFileAsync(ffmpeg, [
       '-y', '-i', oggPath, '-ar', '16000', '-ac', '1', wavPath,
     ], { windowsHide: true });
     if (fs.existsSync(wavPath) && fs.statSync(wavPath).size > 0) {
       return wavPath;
     }
   } catch (err) {
-    console.warn('ffmpeg conversion skipped:', err.message);
+    console.warn('ffmpeg conversion failed:', err.message);
   }
   return oggPath;
 }
@@ -62,4 +74,5 @@ module.exports = {
   downloadTelegramFile,
   convertOggToWav,
   ensureDir,
+  resolveFfmpegPath,
 };

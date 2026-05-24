@@ -43,7 +43,8 @@ function buildCustomFetch(proxyUrl) {
 }
 
 function getOpenAIClient() {
-  if (!config.openaiApiKey || config.demoMode || !config.openaiEnabled) return null;
+  if (!config.openaiApiKey || config.demoMode) return null;
+  if (!config.openaiLlmEnabled && !config.sttEnabled && !config.ttsEnabled) return null;
   if (openaiClient) return openaiClient;
 
   const options = { apiKey: config.openaiApiKey };

@@ -13,6 +13,7 @@ async function handleStart(ctx) {
       'С возвращением! 👋\n\n'
       + 'Команды:\n'
       + '/drill — получить сегодняшнее задание\n'
+      + '/talk — role-play диалог по ситуации\n'
       + '/level — сменить уровень и тему\n'
       + '/stats — стрик и статистика\n'
       + '/help — справка',
@@ -20,7 +21,7 @@ async function handleStart(ctx) {
     return;
   }
 
-  await promptLevelSelection(ctx, telegramId, 'Привет! Я помогу тебе практиковать разговорный английский каждый день.');
+  await promptLevelSelection(ctx, telegramId, 'Привет! Я помогу тебе практиковать разговорный **британский английский** каждый день.');
 }
 
 async function handleChangeLevel(ctx) {

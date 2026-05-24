@@ -81,6 +81,44 @@ function mapSessionRow(sessionRow, responseRow) {
   };
 }
 
+function scheduleVocabReview(card, rating) {
+  const now = new Date();
+  let repetitions = card.repetitions || 0;
+  let intervalDays = card.intervalDays || 1;
+  let lapses = card.lapses || 0;
+
+  if (rating === 0) {
+    repetitions = 0;
+    intervalDays = 1;
+    lapses += 1;
+  } else if (repetitions === 0) {
+    repetitions = 1;
+    intervalDays = 1;
+  } else if (repetitions === 1) {
+    repetitions = 2;
+    intervalDays = rating === 1 ? 2 : 3;
+  } else {
+    repetitions += 1;
+    intervalDays = Math.min(Math.max(Math.round(intervalDays * (rating === 1 ? 1.3 : 2.0)), 2), 180);
+  }
+
+  const nextReviewAt = new Date(now);
+  nextReviewAt.setDate(nextReviewAt.getDate() + intervalDays);
+
+  let status = 'learning';
+  if (repetitions >= 5 && intervalDays >= 14) status = 'mastered';
+  else if (repetitions >= 2) status = 'reviewing';
+
+  return {
+    repetitions,
+    interval_days: intervalDays,
+    lapses,
+    next_review_at: nextReviewAt.toISOString(),
+    last_reviewed_at: now.toISOString(),
+    status,
+  };
+}
+
 class DbStore {
   constructor() {
     this.db = getDb();
@@ -511,6 +549,237 @@ class DbStore {
       if (!session) return true;
       return !['completed', 'skipped'].includes(session.status);
     });
+  }
+
+  rowToVocabCard(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      word: row.word,
+      translationRu: row.translation_ru,
+      contextEn: row.context_en,
+      contextRu: row.context_ru,
+      source: row.source,
+      sessionId: row.session_id,
+      createdAt: row.created_at,
+      nextReviewAt: row.next_review_at,
+      intervalDays: row.interval_days,
+      repetitions: row.repetitions,
+      lapses: row.lapses,
+      lastReviewedAt: row.last_reviewed_at,
+      status: row.status,
+    };
+  }
+
+  addVocabCard(telegramId, card) {
+    const id = normalizeTelegramId(telegramId);
+    const now = new Date().toISOString();
+    try {
+      this.db.prepare(`
+        INSERT INTO vocab_cards (
+          user_id, word, translation_ru, context_en, context_ru, source, session_id,
+          created_at, next_review_at, interval_days, repetitions, lapses, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 'learning')
+      `).run(
+        id,
+        card.word,
+        card.translationRu || card.contextRu || null,
+        card.contextEn,
+        card.contextRu || null,
+        card.source || 'drill',
+        card.sessionId || null,
+        now,
+        now,
+      );
+      return true;
+    } catch (err) {
+      if (String(err.message).includes('UNIQUE')) return false;
+      throw err;
+    }
+  }
+
+  getDueVocabCards(telegramId, limit = 5) {
+    const id = normalizeTelegramId(telegramId);
+    const now = new Date().toISOString();
+    return this.db.prepare(`
+      SELECT * FROM vocab_cards
+      WHERE user_id = ? AND next_review_at <= ?
+      ORDER BY next_review_at ASC
+      LIMIT ?
+    `).all(id, now, limit).map((row) => this.rowToVocabCard(row));
+  }
+
+  getVocabCardById(cardId) {
+    const row = this.db.prepare('SELECT * FROM vocab_cards WHERE id = ?').get(cardId);
+    return this.rowToVocabCard(row);
+  }
+
+  getVocabStats(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    const now = new Date().toISOString();
+    const rows = this.db.prepare(`
+      SELECT status, COUNT(*) AS c FROM vocab_cards WHERE user_id = ? GROUP BY status
+    `).all(id);
+    const due = this.db.prepare(`
+      SELECT COUNT(*) AS c FROM vocab_cards WHERE user_id = ? AND next_review_at <= ?
+    `).get(id, now).c;
+    const total = this.db.prepare(`
+      SELECT COUNT(*) AS c FROM vocab_cards WHERE user_id = ?
+    `).get(id).c;
+
+    const byStatus = { learning: 0, reviewing: 0, mastered: 0 };
+    for (const row of rows) byStatus[row.status] = row.c;
+
+    return {
+      total,
+      due,
+      learning: byStatus.learning + byStatus.reviewing,
+      mastered: byStatus.mastered,
+    };
+  }
+
+  reviewVocabCard(cardId, rating) {
+    const card = this.getVocabCardById(cardId);
+    if (!card) return null;
+
+    const next = scheduleVocabReview(card, rating);
+
+    this.db.prepare(`
+      UPDATE vocab_cards
+      SET repetitions = ?, interval_days = ?, lapses = ?, next_review_at = ?,
+          last_reviewed_at = ?, status = ?
+      WHERE id = ?
+    `).run(
+      next.repetitions,
+      next.interval_days,
+      next.lapses,
+      next.next_review_at,
+      next.last_reviewed_at,
+      next.status,
+      cardId,
+    );
+
+    return this.getVocabCardById(cardId);
+  }
+
+  startVocabReview(telegramId, cardIds) {
+    const id = normalizeTelegramId(telegramId);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO vocab_review_sessions (user_id, card_ids_json, current_index, started_at)
+      VALUES (?, ?, 0, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        card_ids_json = excluded.card_ids_json,
+        current_index = 0,
+        started_at = excluded.started_at
+    `).run(id, JSON.stringify(cardIds), now);
+  }
+
+  getVocabReviewSession(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    const row = this.db.prepare(`
+      SELECT * FROM vocab_review_sessions WHERE user_id = ?
+    `).get(id);
+    if (!row) return null;
+
+    const cardIds = parseJsonArray(row.card_ids_json);
+    if (!cardIds.length) return null;
+
+    const index = Math.min(row.current_index, cardIds.length - 1);
+    return {
+      cardIds,
+      currentIndex: index,
+      currentCardId: cardIds[index],
+      total: cardIds.length,
+    };
+  }
+
+  advanceVocabReview(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    const session = this.getVocabReviewSession(telegramId);
+    if (!session) return null;
+
+    const nextIndex = session.currentIndex + 1;
+    if (nextIndex >= session.cardIds.length) {
+      this.clearVocabReviewSession(telegramId);
+      return null;
+    }
+
+    this.db.prepare(`
+      UPDATE vocab_review_sessions SET current_index = ? WHERE user_id = ?
+    `).run(nextIndex, id);
+
+    return {
+      ...session,
+      currentIndex: nextIndex,
+      currentCardId: session.cardIds[nextIndex],
+    };
+  }
+
+  clearVocabReviewSession(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare('DELETE FROM vocab_review_sessions WHERE user_id = ?').run(id);
+  }
+
+  getUsersWithDueVocab() {
+    const now = new Date().toISOString();
+    return this.db.prepare(`
+      SELECT DISTINCT user_id AS telegram_id FROM vocab_cards
+      WHERE next_review_at <= ?
+    `).all(now).map((row) => row.telegram_id);
+  }
+
+  getDialogueSession(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    const row = this.db.prepare('SELECT * FROM dialogue_sessions WHERE user_id = ?').get(id);
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      scenarioId: row.scenario_id,
+      turnIndex: row.turn_index,
+      maxTurns: row.max_turns,
+      history: parseJsonArray(row.history_json),
+      startedAt: row.started_at,
+    };
+  }
+
+  startDialogueSession(telegramId, scenarioId, maxTurns = 4) {
+    const id = normalizeTelegramId(telegramId);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO dialogue_sessions (user_id, scenario_id, turn_index, max_turns, history_json, started_at)
+      VALUES (?, ?, 0, ?, '[]', ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        scenario_id = excluded.scenario_id,
+        turn_index = 0,
+        max_turns = excluded.max_turns,
+        history_json = '[]',
+        started_at = excluded.started_at
+    `).run(id, scenarioId, maxTurns, now);
+  }
+
+  setDialogueOpening(telegramId, openingEn) {
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare(`
+      UPDATE dialogue_sessions SET history_json = ? WHERE user_id = ?
+    `).run(JSON.stringify([{ role: 'bot', text: openingEn }]), id);
+  }
+
+  appendDialogueHistory(telegramId, entries) {
+    const session = this.getDialogueSession(telegramId);
+    if (!session) return null;
+    const history = [...session.history, ...entries];
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare(`
+      UPDATE dialogue_sessions SET history_json = ?, turn_index = turn_index + 1 WHERE user_id = ?
+    `).run(JSON.stringify(history), id);
+    return this.getDialogueSession(telegramId);
+  }
+
+  clearDialogueSession(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare('DELETE FROM dialogue_sessions WHERE user_id = ?').run(id);
   }
 }
 

@@ -1,6 +1,7 @@
 const OpenAI = require('openai');
 const config = require('../config');
 const { isRecoverableAiError, isQuotaError } = require('./openaiClient');
+const { getEnglishLocalePrompt } = require('../data/englishLocale');
 
 let deepseekClient = null;
 
@@ -16,62 +17,137 @@ function getDeepSeek() {
 }
 
 function getLlmClient() {
-  if (getDeepSeek()) return getDeepSeek();
-  if (config.openaiEnabled) return require('./openaiClient').getOpenAIClient();
+  if (config.openaiLlmEnabled) {
+    const openai = require('./openaiClient').getOpenAIClient();
+    if (openai) return openai;
+  }
+  if (config.deepseekLlmEnabled && getDeepSeek()) return getDeepSeek();
+  if (config.openaiLlmEnabled) return require('./openaiClient').getOpenAIClient();
   return null;
 }
 
 function getModel() {
-  return config.deepseekApiKey ? 'deepseek-chat' : 'gpt-4o-mini';
+  if (config.openaiLlmEnabled) return config.llmModel;
+  if (config.deepseekLlmEnabled) return 'deepseek-chat';
+  return config.llmModel;
 }
 
-const FLUENCY_SYSTEM_PROMPT = `You are an English speaking coach. Balance warmth with HONEST feedback — never claim the answer was perfect if it had clear errors.
+const FLUENCY_SYSTEM_PROMPT = `Ты — English speaking coach в Telegram-боте Fluency Coach Bot (@DailyGabBot).
 
-Analyze the student's answer against the task.
-Return ONLY valid JSON with keys:
-- corrected_text: natural corrected version preserving the student's ideas when possible
-- what_went_well: array of 1-3 bullet points in Russian — ONLY genuine strengths. If the answer was weak or wrong, mention only real effort. Do NOT invent praise for incorrect grammar or off-topic content.
-- issues: array of 1-3 objects {original, corrected, note_ru} for the most important mistakes. Empty array only if the answer was strong for the level.
-- main_improvement: one clear tip in Russian — REQUIRED when issues is non-empty; empty only if answer was genuinely strong
-- useful_phrases: array of 2-3 objects {en, ru} from corrected_text
-- grammar_tip: one short grammar note in Russian when there is a grammar issue; empty string if none
-- praise: one sentence in Russian. If issues is non-empty, do NOT say the answer was correct/perfect/well built — only thank them and point to fixes below.
-- what_went_well: if issues is non-empty, mention ONLY effort (answered the question, tried to speak) — NEVER say grammar/structure was correct
-- error_rule_tag: snake_case for the main issue, or "none" if nearly perfect
-- original_fragment: the main problematic fragment, or empty
-- correction: the corrected fragment, or empty
-- quality: one of "strong", "ok", "needs_work"
+ЦЕЛЬ
+Помочь пользователю уверенно говорить на английском. Fluency важнее идеальной грамматики, но ошибки и неверные ответы нужно называть честно и конкретно.
 
-CRITICAL: If the student answer has grammar, tense, word-order, or vocabulary errors, issues MUST contain at least 1 item. Never return empty issues for a flawed answer. Never say the answer was perfect when it was not.`;
+ВХОД
+- level: A1 | A2 | B1 | B2 | C1
+- task: speaking-задание (EN)
+- student_answer: транскript (EN) ИЛИ marker: "voice_only_no_transcript"
 
-const VOICE_ONLY_PROMPT = `Speech-to-text is UNAVAILABLE. You CANNOT hear what the student said.
-Do NOT pretend to evaluate their specific answer. Do NOT say their answer was good or correct.
+АЛГОРИТМ ПРОВЕРКИ (строго по порядку)
+1. РЕЛЕВАНТНОСТЬ — ответил ли ученик именно на task?
+   - off_topic: другая тема, бессмыслица, случайные слова, ответ не на тот вопрос
+   - partial: слишком коротко (< 3 слов для open-ended), только намёк на тему, не раскрыто
+   - on_topic: ответ по смыслу соответствует task
+2. ОШИБКИ — грамматика, время, артикль, порядок слов, лексика, регистр
+3. ИСПРАВЛЕНИЕ — corrected_text: как правильно ответить на task (не выдумывай чужие факты)
 
-Return ONLY valid JSON:
-- mode: "no_transcript"
-- corrected_text: a strong model answer to the task (2-4 sentences) at the student's level
-- typical_mistakes: array of 2-3 objects {wrong, right, note_ru} — common mistakes on THIS task at this level
-- useful_phrases: array of 2-3 objects {en, ru}
-- note_ru: 2 sentences in Russian: without speech recognition the bot cannot check their exact words; they can send the same answer as TEXT for real correction
-- praise: one sentence in Russian praising ONLY that they spoke (effort), NOT the content
-- error_rule_tag: one grammar topic typical for this task, or "none"
-- what_went_well: array with exactly 1 item in Russian about attempting to speak
-- issues: []
-- main_improvement: empty string
-- grammar_tip: empty string
-- original_fragment: empty
-- correction: empty
-- quality: "unknown"`;
+ЖЁСТКИЕ ПРАВИЛА (нарушать нельзя)
+1. Ответ — ТОЛЬКО валидный JSON. Без текста до или после JSON. Без markdown.
+2. Если student_answer — реальный транскript:
+   - Сначала выставь relevance: on_topic | partial | off_topic | nonsense
+   - Если relevance = off_topic или nonsense → issues ОБЯЗАН быть непустым, quality = "needs_work"
+   - Если relevance = partial → issues непустой только если ответ реально неполный/короткий
+   - Если ответ правильный и по теме, без ошибок → issues = [], quality = "strong", praise может хвалить
+   - issues обязан быть непустым только если есть реальная ошибка ИЛИ ответ явно не по теме
+   - Если issues не пустой → quality = "needs_work" или "ok", но НЕ "strong"
+   - Если issues не пустой → praise НЕ содержит: "правильно", "идеально", "отлично", "молодец", "без ошибок", "perfect", "well done", "верно"
+   - Если issues не пустой → what_went_well только про усилие ("попробовал ответить"), НЕ про правильность
+   - main_improvement обязателен, если issues не пустой
+   - НЕ хвали за правильность, если ответ off-topic или с ошибками
+3. Если marker = "voice_only_no_transcript":
+   - mode = "no_transcript", issues = [], quality = "unknown", relevance = "unknown"
+   - НЕ придумывай original_fragment и конкретные ошибки пользователя
+4. corrected_text — улучшенный вариант ответа ученика; если ошибок нет, может совпадать с transcript
+5. grammar_tip — максимум 1–2 предложения на русском; "" если ошибок нет
+6. useful_phrases — 2–3 объекта {en, ru}
 
-const FOLLOWUP_SYSTEM_PROMPT = `You are an English speaking coach continuing a natural conversation.
+ПРИМЕРЫ off_topic
+- Task: "What places do you like to visit?" → Answer: "you" / "yes" / "I like pizza" → off_topic
+- Task: "Describe your morning routine" → Answer: "My name is John" → off_topic
+- Task: "What do you do in free time?" → Answer: "Good" → partial
+
+САМОПРОВЕРКА ПЕРЕД ОТВЕТОМ
+- off-topic, но issues пустой? → исправь
+- praise хвалит при ошибках? → перепиши
+- corrected_text просто косметически правит бессмыслицу вместо ответа на task? → перепиши corrected_text
+
+JSON-СХЕМА (transcript):
+{
+  "relevance": "on_topic|partial|off_topic|nonsense",
+  "relevance_note_ru": "string",
+  "corrected_text": "string",
+  "what_went_well": ["string"],
+  "issues": [{"original": "string", "corrected": "string", "note_ru": "string"}],
+  "main_improvement": "string",
+  "useful_phrases": [{"en": "string", "ru": "string"}],
+  "grammar_tip": "string",
+  "praise": "string",
+  "error_rule_tag": "string",
+  "original_fragment": "string",
+  "correction": "string",
+  "quality": "strong|ok|needs_work"
+}
+
+ТОН
+Тёплый коуч, но честный. Русский — простой. Английский — естественный, по уровню ученика.`;
+
+function withEnglishLocale(base) {
+  return `${base}\n\n${getEnglishLocalePrompt(config.englishVariant)}`;
+}
+
+function getVoiceOnlyPrompt() {
+  return `${withEnglishLocale(FLUENCY_SYSTEM_PROMPT)}
+
+РЕЖИМ voice_only_no_transcript — student_answer = marker: "voice_only_no_transcript".
+
+JSON-СХЕМА (voice_only):
+{
+  "mode": "no_transcript",
+  "corrected_text": "string",
+  "typical_mistakes": [{"wrong": "string", "right": "string", "note_ru": "string"}],
+  "useful_phrases": [{"en": "string", "ru": "string"}],
+  "note_ru": "string",
+  "praise": "string",
+  "what_went_well": ["string"],
+  "issues": [],
+  "main_improvement": "",
+  "grammar_tip": "",
+  "original_fragment": "",
+  "correction": "",
+  "error_rule_tag": "string",
+  "quality": "unknown"
+}`;
+}
+
+function getFollowUpAnalysisPrompt() {
+  return `${withEnglishLocale(FLUENCY_SYSTEM_PROMPT)}
+
+Контекст: это follow-up вопрос в диалоге. task = follow-up question.
+Проверяй, ответил ли ученик именно на follow-up question, а не на исходное задание.`;
+}
+
+function getFollowUpSystemPrompt() {
+  return `${withEnglishLocale(`You are an English speaking coach continuing a natural conversation.
 Return ONLY valid JSON:
 - follow_up_en: one short follow-up question in English (1 sentence, open-ended)
-- follow_up_ru: the same question in Russian`;
+- follow_up_ru: the same question in Russian`)}`;
+}
 
-const PREPARE_SYSTEM_PROMPT = `You are an English speaking coach helping a student prepare to speak.
+function getPrepareSystemPrompt() {
+  return `${withEnglishLocale(`You are an English speaking coach helping a student prepare to speak.
 Return ONLY valid JSON:
 - phrases: array of 3 objects {en, ru} — useful starter phrases for this task
-- words: array of 3 English words with Russian hints as strings like "weather — погода"`;
+- words: array of 3 English words with Russian hints as strings like "weather — погода"`)}`;
+}
 
 function demoAnalysis(transcript, taskPrompt) {
   const hasRealText = transcript?.trim() && !transcript.startsWith('(');
@@ -126,28 +202,123 @@ function tokenize(text) {
 }
 
 const OVERPRAISE_RE = /отлич|прекрас|идеал|perfect|great job|well done|всё хорошо|все хорошо|без ошибок|правильн|молодец|верно|хорошо постро|справил/i;
-const FALSE_STRENGTH_RE = /правильн|верно|без ошибок|отличн|идеальн|perfectly|correctly built/i;
+const FALSE_STRENGTH_RE = /правильн|верно|без ошибок|отличн|идеальн|perfectly|correctly built|ответил на задание|ответил на вопрос|по теме/i;
+const CYRILLIC_RE = /[\u0400-\u04FF]/;
+const OFF_TOPIC_NOTE_RE = /не по теме|off.topic|не отвечает|не раскрывает|слишком коротк|на английском/i;
+
+function wordCount(text) {
+  return (text || '').trim().split(/\s+/).filter(Boolean).length;
+}
+
+function isYesNoTask(taskPrompt) {
+  const task = (taskPrompt || '').trim();
+  if (!task) return false;
+  return /^(do|does|did|is|are|was|were|have|has|can|will|would)\b/i.test(task)
+    && wordCount(task) <= 14;
+}
+
+function shouldTrustLlmVerdict(analysis) {
+  if ((analysis.issues || []).length > 0) return false;
+  if (analysis.relevance === 'off_topic' || analysis.relevance === 'nonsense') return false;
+  if (analysis.relevance === 'partial') return false;
+  if (analysis.quality === 'needs_work') return false;
+  return true;
+}
+
+function hasOffTopicIssue(issues) {
+  return (issues || []).some((item) => OFF_TOPIC_NOTE_RE.test(item.noteRu || item.note_ru || ''));
+}
+
+function pushIssue(issues, issue) {
+  const exists = issues.some(
+    (item) => item.noteRu === issue.noteRu && item.original === issue.original,
+  );
+  if (!exists) issues.push(issue);
+}
+
+function validateAnswerQuality(analysis, transcript, taskPrompt) {
+  if (analysis.noTranscript || !transcript?.trim()) return analysis;
+
+  let {
+    issues,
+    quality,
+    relevance,
+    relevance_note_ru,
+    praise,
+    main_improvement,
+    what_went_well,
+    corrected_text,
+  } = analysis;
+  issues = [...(issues || [])];
+  relevance = relevance || analysis.relevance || 'on_topic';
+  relevance_note_ru = relevance_note_ru || analysis.relevanceNoteRu || '';
+
+  if (CYRILLIC_RE.test(transcript) && !issues.some((item) => /английск/i.test(item.noteRu || ''))) {
+    pushIssue(issues, {
+      original: transcript.slice(0, 100),
+      corrected: (corrected_text || '').slice(0, 100),
+      noteRu: 'На speaking-задание нужно отвечать на английском.',
+    });
+    relevance = 'partial';
+  }
+
+  const wc = wordCount(transcript);
+  if (wc < 3 && !isYesNoTask(taskPrompt) && issues.length === 0) {
+    pushIssue(issues, {
+      original: transcript,
+      corrected: (corrected_text || '').slice(0, 120),
+      noteRu: wc <= 1
+        ? 'Ответ не по теме или слишком короткий — нужно 2–4 предложения по заданию.'
+        : 'Ответ слишком короткий — раскрой мысль подробнее.',
+    });
+    relevance = wc <= 1 ? 'off_topic' : 'partial';
+    if (!main_improvement) {
+      main_improvement = 'Ответь полнее на вопрос задания: что, где, почему, как часто.';
+    }
+  }
+
+  if ((relevance === 'off_topic' || relevance === 'nonsense') && !hasOffTopicIssue(issues)) {
+    pushIssue(issues, {
+      original: transcript.slice(0, 100),
+      corrected: (corrected_text || '').slice(0, 120),
+      noteRu: relevance_note_ru || 'Ответ не по теме задания.',
+    });
+    quality = 'needs_work';
+  }
+
+  return {
+    ...analysis,
+    issues,
+    quality,
+    relevance,
+    relevance_note_ru,
+    main_improvement,
+    praise,
+    what_went_well,
+  };
+}
 
 function textsDifferMeaningfully(original, corrected) {
   const orig = (original || '').trim();
   const corr = (corrected || '').trim();
   if (!orig || !corr) return false;
   if (orig === corr) return false;
-  if (orig.toLowerCase() === corr.toLowerCase()) return true;
+  if (orig.toLowerCase() === corr.toLowerCase()) return false;
 
   const a = tokenize(original);
   const b = tokenize(corrected);
   if (!a.length || !b.length) return orig !== corr;
   const setB = new Set(b);
   const uniqueInA = a.filter((w) => !setB.has(w)).length;
-  return uniqueInA >= 2 || Math.abs(a.length - b.length) >= 3 || orig !== corr;
+  const uniqueInB = b.filter((w) => !new Set(a).has(w)).length;
+  return uniqueInA >= 3 || uniqueInB >= 3 || Math.abs(a.length - b.length) >= 5;
 }
 
 function sanitizeWhatWentWell(items, hasIssues) {
   if (!hasIssues) return items;
   const filtered = (items || []).filter((item) => !FALSE_STRENGTH_RE.test(item));
   if (filtered.length) return filtered.slice(0, 2);
-  return ['Ты ответил(а) на вопрос — это уже шаг вперёд.'];
+  return ['Ты попробовал(а) ответить — это уже шаг вперёд.'];
 }
 
 function sanitizePraise(praise, hasIssues) {
@@ -158,28 +329,40 @@ function sanitizePraise(praise, hasIssues) {
   return praise || 'Спасибо за ответ! Есть что поправить.';
 }
 
-function enforceHonestFeedback(analysis, transcript) {
+function enforceHonestFeedback(analysis, transcript, taskPrompt = '') {
   if (analysis.noTranscript || !transcript?.trim()) return analysis;
 
-  let { issues, quality, main_improvement, grammar_tip, praise, what_went_well } = analysis;
+  let validated = validateAnswerQuality(analysis, transcript, taskPrompt);
+  let { issues, quality, main_improvement, grammar_tip, praise, what_went_well } = validated;
   issues = issues || [];
 
-  if (issues.length === 0 && textsDifferMeaningfully(transcript, analysis.corrected_text)) {
-    quality = 'needs_work';
-    if (analysis.original_fragment && analysis.correction
-      && analysis.original_fragment !== analysis.correction) {
-      issues = [{
-        original: analysis.original_fragment,
-        corrected: analysis.correction,
-        noteRu: main_improvement || grammar_tip || 'Обрати внимание на эту часть.',
-      }];
-    } else {
-      issues = [{
-        original: transcript.slice(0, 100),
-        corrected: analysis.corrected_text.slice(0, 100),
-        noteRu: 'Твой вариант отличается от правильного — сравни с исправленным текстом.',
-      }];
-    }
+  if (shouldTrustLlmVerdict(validated)) {
+    return {
+      ...validated,
+      issues: [],
+      quality: validated.quality === 'needs_work' ? 'ok' : validated.quality,
+      corrected_text: transcript.trim(),
+      praise: praise || 'Хороший ответ — ты ответил по теме!',
+      what_went_well: what_went_well?.length
+        ? what_went_well
+        : ['Ты ответил на задание и сформулировал мысль.'],
+    };
+  }
+
+  const fragment = validated.original_fragment?.trim();
+  const correction = validated.correction?.trim();
+  if (
+    issues.length === 0
+    && fragment
+    && correction
+    && fragment !== correction
+    && fragment.length <= 120
+  ) {
+    issues = [{
+      original: fragment,
+      corrected: correction,
+      noteRu: main_improvement || grammar_tip || 'Обрати внимание на эту часть.',
+    }];
     if (!main_improvement) {
       main_improvement = 'Есть ошибки — посмотри блок «Исправления» и улучшенный вариант.';
     }
@@ -189,12 +372,16 @@ function enforceHonestFeedback(analysis, transcript) {
 
   if (hasIssues) {
     quality = quality === 'strong' ? 'ok' : 'needs_work';
-    praise = sanitizePraise(praise, true);
+    if (validated.relevance === 'off_topic' || validated.relevance === 'nonsense') {
+      praise = 'Спасибо за ответ! Но он не по теме задания — смотри правильный вариант ниже.';
+    } else {
+      praise = sanitizePraise(praise, true);
+    }
     what_went_well = sanitizeWhatWentWell(what_went_well, true);
   }
 
   return {
-    ...analysis,
+    ...validated,
     issues,
     quality,
     main_improvement,
@@ -204,7 +391,7 @@ function enforceHonestFeedback(analysis, transcript) {
   };
 }
 
-function normalizeAnalysis(raw, transcript, voiceOnly = false) {
+function normalizeAnalysis(raw, transcript, voiceOnly = false, taskPrompt = '') {
   const corrected = raw.corrected_text || raw.correctedText || transcript;
   const whatWentWell = raw.what_went_well || raw.whatWentWell;
   const usefulPhrases = raw.useful_phrases || raw.usefulPhrases;
@@ -212,6 +399,8 @@ function normalizeAnalysis(raw, transcript, voiceOnly = false) {
   const mainImprovement = raw.main_improvement || raw.mainImprovement || '';
   const grammarTip = raw.grammar_tip || raw.grammarTip || '';
   const errorTag = raw.error_rule_tag || raw.errorRuleTag || 'general';
+  const relevance = raw.relevance || 'on_topic';
+  const relevanceNoteRu = raw.relevance_note_ru || raw.relevanceNoteRu || '';
   const noTranscript = raw.mode === 'no_transcript' || (voiceOnly && !transcript?.trim());
   const quality = raw.quality || (issues.length ? 'needs_work' : 'ok');
 
@@ -231,7 +420,9 @@ function normalizeAnalysis(raw, transcript, voiceOnly = false) {
   const whatWentWellFinal = sanitizeWhatWentWell(
     Array.isArray(whatWentWell) && whatWentWell.length
       ? whatWentWell.slice(0, 3)
-      : (noTranscript ? ['Ты записал(а) голосовой — это тренирует уверенность.'] : ['Ты ответил на задание.']),
+      : (noTranscript
+        ? ['Ты записал(а) голосовой — это тренирует уверенность.']
+        : (normalizedIssues.length ? [] : ['Ты ответил на задание.'])),
     normalizedIssues.length > 0,
   );
 
@@ -254,22 +445,35 @@ function normalizeAnalysis(raw, transcript, voiceOnly = false) {
     original_fragment: raw.original_fragment || raw.originalFragment || (transcript || '').slice(0, 100),
     correction: raw.correction || corrected,
     quality,
+    relevance,
+    relevance_note_ru: relevanceNoteRu,
     noTranscript,
     note_ru: raw.note_ru || raw.noteRu || '',
-  }, transcript);
+  }, transcript, taskPrompt);
 }
 
-async function callJson(client, systemPrompt, userContent, temperature = 0.4) {
-  const response = await client.chat.completions.create({
-    model: getModel(),
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent },
-    ],
-    temperature,
-  });
-  return JSON.parse(response.choices[0]?.message?.content || '{}');
+async function callJson(client, systemPrompt, userContent, temperature) {
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await client.chat.completions.create({
+        model: getModel(),
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        temperature: temperature ?? config.llmTemperature,
+        max_tokens: config.llmMaxTokens,
+      });
+      return JSON.parse(response.choices[0]?.message?.content || '{}');
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) continue;
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -279,30 +483,30 @@ async function callJson(client, systemPrompt, userContent, temperature = 0.4) {
  * @param {{ forceDemo?: boolean, voiceOnly?: boolean }} options
  */
 async function analyzeAnswer(transcript, taskPrompt, level, options = {}) {
-  if (config.demoMode || (options.forceDemo && !config.deepseekApiKey)) {
-    return { ...normalizeAnalysis(demoAnalysis(transcript, taskPrompt), transcript, false), demo: true };
+  if (config.demoMode || (options.forceDemo && !getLlmClient())) {
+    return { ...normalizeAnalysis(demoAnalysis(transcript, taskPrompt), transcript, false, taskPrompt), demo: true };
   }
 
   const client = getLlmClient();
   if (!client) {
-    return { ...normalizeAnalysis(demoAnalysis(transcript, taskPrompt), transcript, false), demo: true };
+    return { ...normalizeAnalysis(demoAnalysis(transcript, taskPrompt), transcript, false, taskPrompt), demo: true };
   }
 
   const voiceOnly = options.voiceOnly || !transcript?.trim();
-  const systemPrompt = voiceOnly ? VOICE_ONLY_PROMPT : FLUENCY_SYSTEM_PROMPT;
+  const systemPrompt = voiceOnly ? getVoiceOnlyPrompt() : withEnglishLocale(FLUENCY_SYSTEM_PROMPT);
   const userContent = voiceOnly
-    ? `Student level: ${level}\nSpeaking task: ${taskPrompt}\nThe student sent a voice message.`
-    : `Student level: ${level}\nTask: ${taskPrompt}\nStudent answer (transcript): ${transcript}`;
+    ? `Student level: ${level}\nTask: ${taskPrompt}\nstudent_answer: marker: "voice_only_no_transcript"`
+    : `Student level: ${level}\nTask: ${taskPrompt}\nstudent_answer (transcript): ${transcript}\n\nЕсли ответ правильный и по теме — issues=[], quality=strong. Не ищи ошибки там, где их нет.`;
 
   try {
-    const raw = await callJson(client, systemPrompt, userContent, 0.25);
-    const normalized = normalizeAnalysis(raw, transcript, voiceOnly);
+    const raw = await callJson(client, systemPrompt, userContent);
+    const normalized = normalizeAnalysis(raw, transcript, voiceOnly, taskPrompt);
     return { ...normalized, demo: false, voiceOnly: normalized.noTranscript };
   } catch (err) {
     console.error('LLM error:', err.message);
     if (isRecoverableAiError(err)) {
       return {
-        ...normalizeAnalysis(demoAnalysis(transcript, taskPrompt), transcript, false),
+        ...normalizeAnalysis(demoAnalysis(transcript, taskPrompt), transcript, false, taskPrompt),
         demo: true,
         fallbackReason: isQuotaError(err) ? 'quota' : 'connection',
       };
@@ -323,9 +527,8 @@ async function generateFollowUpQuestion(taskPrompt, transcript, level) {
   try {
     const raw = await callJson(
       client,
-      FOLLOWUP_SYSTEM_PROMPT,
-      `Level: ${level}\nOriginal task: ${taskPrompt}\nStudent answer: ${transcript || '(voice answer)'}`,
-      0.6,
+      getFollowUpSystemPrompt(),
+      `Level: ${level}\nOriginal task: ${taskPrompt}\nStudent answer: ${transcript || 'marker: "voice_only_no_transcript"'}`,
     );
     return {
       follow_up_en: raw.follow_up_en || raw.followUpEn || demoFollowUp().follow_up_en,
@@ -348,9 +551,8 @@ async function generatePrepareHints(taskPrompt, level) {
   try {
     const raw = await callJson(
       client,
-      PREPARE_SYSTEM_PROMPT,
+      getPrepareSystemPrompt(),
       `Level: ${level}\nSpeaking task: ${taskPrompt}`,
-      0.5,
     );
     const phrases = raw.phrases || raw.starter_phrases || demoPrepareHints(taskPrompt).phrases;
     const words = raw.words || demoPrepareHints(taskPrompt).words;
@@ -376,43 +578,38 @@ async function analyzeFollowUpAnswer(transcript, followUpPrompt, level, options 
 
   if (!client) {
     return {
-      corrected_text: 'That is a great point. I really enjoy it because it helps me relax.',
-      praise: 'Отлично — ты поддержал разговор!',
+      corrected_text: transcript || 'That is a great point. I really enjoy it because it helps me relax.',
+      praise: 'Спасибо, что продолжил(а) разговор!',
+      issues: transcript?.trim() ? [] : [],
+      relevance: 'unknown',
       demo: true,
     };
   }
 
-  const systemPrompt = voiceOnly
-    ? `Speech-to-text unavailable. Return JSON: mode "no_transcript", corrected_text as model answer, praise only about speaking effort, note_ru explaining they should send TEXT for real check.`
-    : `You are an English speaking coach. The student answered a follow-up question. Be HONEST about errors.
-Return ONLY valid JSON:
-- corrected_text: improved version (1-3 sentences)
-- issues: array of up to 2 objects {original, corrected, note_ru} if there were mistakes; else []
-- praise: one honest encouraging sentence in Russian`;
-
+  const systemPrompt = voiceOnly ? getVoiceOnlyPrompt() : getFollowUpAnalysisPrompt();
   const userContent = voiceOnly
-    ? `Level: ${level}\nFollow-up question: ${followUpPrompt}\nStudent sent a voice message.`
-    : `Level: ${level}\nFollow-up question: ${followUpPrompt}\nStudent answer: ${transcript}`;
+    ? `Student level: ${level}\nTask (follow-up question): ${followUpPrompt}\nstudent_answer: marker: "voice_only_no_transcript"`
+    : `Student level: ${level}\nTask (follow-up question): ${followUpPrompt}\nstudent_answer (transcript): ${transcript}\n\nПроверь, ответил ли ученик именно на follow-up question.`;
 
   try {
-    const raw = await callJson(client, systemPrompt, userContent, 0.25);
-    const issues = Array.isArray(raw.issues) ? raw.issues : [];
-    let praise = raw.praise || (voiceOnly ? 'Спасибо, что продолжил(а) разговор!' : 'Хорошо, что поддержал(а) диалог!');
-    if (!voiceOnly && issues.length && /отлич|прекрас|идеал/i.test(praise)) {
-      praise = 'Неплохо для follow-up — ниже мелкие правки.';
-    }
+    const raw = await callJson(client, systemPrompt, userContent);
+    const normalized = normalizeAnalysis(raw, transcript, voiceOnly, followUpPrompt);
     return {
-      corrected_text: raw.corrected_text || raw.correctedText || transcript,
-      praise,
-      issues,
-      voiceOnly,
+      corrected_text: normalized.corrected_text,
+      praise: normalized.praise,
+      issues: normalized.issues,
+      relevance: normalized.relevance,
+      main_improvement: normalized.main_improvement,
+      quality: normalized.quality,
+      voiceOnly: normalized.noTranscript,
       demo: false,
     };
   } catch (err) {
     console.error('Follow-up analysis error:', err.message);
     return {
       corrected_text: transcript || 'Thanks for sharing more!',
-      praise: 'Хорошо, что продолжил(а) разговор!',
+      praise: 'Спасибо, что продолжил(а) разговор!',
+      issues: [],
       demo: true,
     };
   }
@@ -445,7 +642,8 @@ async function generateWeeklyExercise(topErrors) {
         content: `Weekly error tags: ${rulesText}. Create a brief weekly review and one speaking mini-exercise (voice recording).`,
       },
     ],
-    temperature: 0.5,
+    temperature: config.llmTemperature,
+    max_tokens: config.llmMaxTokens,
   });
 
   return JSON.parse(response.choices[0]?.message?.content || '{}');

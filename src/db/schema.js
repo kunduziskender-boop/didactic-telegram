@@ -87,6 +87,46 @@ CREATE TABLE IF NOT EXISTS weekly_reviews (
 CREATE INDEX IF NOT EXISTS idx_sessions_user_date ON daily_sessions(user_id, session_date);
 CREATE INDEX IF NOT EXISTS idx_error_log_user ON error_log(user_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_level_topic ON tasks(level, topic, active);
+
+CREATE TABLE IF NOT EXISTS vocab_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  word TEXT NOT NULL,
+  translation_ru TEXT,
+  context_en TEXT NOT NULL,
+  context_ru TEXT,
+  source TEXT NOT NULL DEFAULT 'drill',
+  session_id INTEGER,
+  created_at TEXT NOT NULL,
+  next_review_at TEXT NOT NULL,
+  interval_days INTEGER NOT NULL DEFAULT 1,
+  repetitions INTEGER NOT NULL DEFAULT 0,
+  lapses INTEGER NOT NULL DEFAULT 0,
+  last_reviewed_at TEXT,
+  status TEXT NOT NULL DEFAULT 'learning',
+  UNIQUE(user_id, context_en),
+  FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+);
+
+CREATE TABLE IF NOT EXISTS vocab_review_sessions (
+  user_id INTEGER PRIMARY KEY,
+  card_ids_json TEXT NOT NULL,
+  current_index INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vocab_user_review ON vocab_cards(user_id, next_review_at);
+
+CREATE TABLE IF NOT EXISTS dialogue_sessions (
+  user_id INTEGER PRIMARY KEY,
+  scenario_id TEXT NOT NULL,
+  turn_index INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 4,
+  history_json TEXT NOT NULL DEFAULT '[]',
+  started_at TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+);
 `;
 
 module.exports = { SCHEMA_SQL };

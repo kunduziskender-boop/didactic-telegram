@@ -1,5 +1,8 @@
 const store = require('../store');
+const config = require('../config');
+const { getEnglishLocaleLabel } = require('../data/englishLocale');
 const { generateWeeklyExercise } = require('../services/llm');
+const { withTyping } = require('../services/typing');
 
 async function handleStats(ctx) {
   const telegramId = ctx.from.id;
@@ -13,6 +16,7 @@ async function handleStats(ctx) {
   const streak = store.getStreak(telegramId);
   const errorCount = store.countErrors(telegramId);
   const completed = store.countCompletedSessions(telegramId);
+  const vocab = store.getVocabStats(telegramId);
   const phrases = store.getRecentPhrases(telegramId, 3);
   const session = store.getTodaySession(telegramId);
 
@@ -34,6 +38,7 @@ async function handleStats(ctx) {
     + `Тема: ${user.topic}\n`
     + `🔥 Стрик: ${streak?.currentStreak ?? 0} (рекорд: ${streak?.longestStreak ?? 0})\n`
     + `🗣 Диалогов завершено: ${completed}\n`
+    + `📖 Слов в контексте: ${vocab.total} (на повтор: ${vocab.due})\n`
     + `📝 Ошибок записано: ${errorCount}\n`
     + `📅 Сегодня: ${session ? statusLabels[session.status] || session.status : 'нет сессии'}\n\n`
     + `💬 Последние фразы:\n${phraseLine}`,
@@ -44,19 +49,24 @@ async function handleStats(ctx) {
 async function handleHelp(ctx) {
   await ctx.reply(
     '📖 **Daily Speaking Drill Bot**\n\n'
+    + `🇬🇧 Язык: **${getEnglishLocaleLabel(config.englishVariant)}** (UK spelling & vocabulary)\n\n`
     + '**Сценарии:**\n'
     + '• Prepare → Speak — подсказки перед записью\n'
     + '• Daily Drill — голосовое задание → ваш ответ → fluency feedback\n'
     + '• Mini-dialogue — follow-up вопрос для живого разговора\n'
+    + '• Role-play — /talk (диалог по готовой ситуации, 4 реплики)\n'
     + '• Shadow Practice — повторение за ботом\n'
     + '• Phrase bank — /phrases\n'
+    + '• Context Words — /words (слова в контексте + интервальное повторение)\n'
     + '• Weekly Error Review — по воскресеньям\n'
     + '• Напоминание в 20:00 если задание не сделано\n\n'
     + '**Команды** (кнопка «/» в чате):\n'
     + '/start — онбординг / главное меню\n'
     + '/level — сменить уровень и тему\n'
     + '/drill — получить задание\n'
+    + '/talk — role-play диалог (ситуация → беседа)\n'
     + '/phrases — фразы из прошлых drill\n'
+    + '/words — повторить слова в контексте (SRS)\n'
     + '/stats — стрик и статистика\n'
     + '/weekly — еженедельный обзор ошибок\n'
     + '/help — эта справка\n\n'
@@ -126,7 +136,11 @@ async function handleWeeklyTest(ctx) {
     return;
   }
 
-  const { summary, miniExercise } = await generateWeeklyExercise(topErrors);
+  const { summary, miniExercise } = await withTyping(
+    ctx.telegram,
+    ctx.chat.id,
+    () => generateWeeklyExercise(topErrors),
+  );
   store.saveWeeklyReview(telegramId, { weekStart: weekStart.toISOString().slice(0, 10), topErrors, miniExercise });
 
   await ctx.reply(
