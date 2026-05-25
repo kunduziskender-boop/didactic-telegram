@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getDb } = require('../db/connection');
+const { LEVELS } = require('../data/constants');
 
 const LEGACY_STORE_PATH = path.resolve('./data/store.json');
 
@@ -372,20 +373,31 @@ class DbStore {
       WHERE user_id = ? AND session_date >= ?
     `).all(id, cutoff).map((r) => r.task_id);
 
-    const notRecent = recentUsedIds.length
-      ? `AND t.id NOT IN (${recentUsedIds.map(() => '?').join(',')})`
-      : '';
+    const pick = (taskLevel, taskTopic, excludeRecent) => {
+      const notRecent = excludeRecent && recentUsedIds.length
+        ? `AND t.id NOT IN (${recentUsedIds.map(() => '?').join(',')})`
+        : '';
+      const topicClause = taskTopic === 'any' ? '1=1' : 't.topic = ?';
+      const params = taskTopic === 'any'
+        ? [taskLevel, ...(excludeRecent && recentUsedIds.length ? recentUsedIds : [])]
+        : [taskLevel, taskTopic, ...(excludeRecent && recentUsedIds.length ? recentUsedIds : [])];
 
-    let row = this.db.prepare(`
-      SELECT t.* FROM tasks t
-      WHERE t.active = 1 AND t.level = ?
-        AND (t.topic = ? OR ? = 'any')
-        ${notRecent}
-      ORDER BY RANDOM() LIMIT 1
-    `).get(level, topic, topic, ...recentUsedIds);
+      return this.db.prepare(`
+        SELECT t.* FROM tasks t
+        WHERE t.active = 1 AND t.level = ?
+          AND ${topicClause}
+          ${notRecent}
+        ORDER BY RANDOM() LIMIT 1
+      `).get(...params);
+    };
 
-    if (!row) {
-      row = this.db.prepare(`
+    const pickLeastRecent = (taskLevel, taskTopic) => {
+      const topicClause = taskTopic === 'any' ? '1=1' : 't.topic = ?';
+      const params = taskTopic === 'any'
+        ? [id, taskLevel]
+        : [id, taskLevel, taskTopic];
+
+      return this.db.prepare(`
         SELECT t.* FROM tasks t
         LEFT JOIN (
           SELECT task_id, MAX(session_date) AS last_used
@@ -394,16 +406,32 @@ class DbStore {
           GROUP BY task_id
         ) usage ON usage.task_id = t.id
         WHERE t.active = 1 AND t.level = ?
-          AND (t.topic = ? OR ? = 'any')
+          AND ${topicClause}
         ORDER BY usage.last_used ASC, RANDOM()
         LIMIT 1
-      `).get(id, level, topic, topic);
+      `).get(...params);
+    };
+
+    const userTopic = topic || 'any';
+    const searchTopic = userTopic === 'any' ? 'any' : userTopic;
+
+    let row = pick(level, searchTopic, true);
+    if (!row) row = pickLeastRecent(level, searchTopic);
+
+    if (!row && userTopic !== 'any') {
+      const levelIdx = LEVELS.indexOf(level);
+      const adjacent = [];
+      if (levelIdx > 0) adjacent.push(LEVELS[levelIdx - 1]);
+      if (levelIdx >= 0 && levelIdx < LEVELS.length - 1) adjacent.push(LEVELS[levelIdx + 1]);
+
+      for (const adjLevel of adjacent) {
+        row = pick(adjLevel, userTopic, true) || pickLeastRecent(adjLevel, userTopic);
+        if (row) break;
+      }
     }
 
-    if (!row) {
-      row = this.db.prepare(`
-        SELECT * FROM tasks WHERE active = 1 ORDER BY RANDOM() LIMIT 1
-      `).get();
+    if (!row && userTopic === 'any') {
+      row = pick(level, 'any', true) || pickLeastRecent(level, 'any');
     }
 
     return rowToTask(row);
@@ -740,21 +768,34 @@ class DbStore {
       turnIndex: row.turn_index,
       maxTurns: row.max_turns,
       history: parseJsonArray(row.history_json),
+      suggestedReplyEn: row.suggested_reply_en || '',
+      suggestedReplyRu: row.suggested_reply_ru || '',
       startedAt: row.started_at,
     };
+  }
+
+  setDialogueSuggestion(telegramId, suggestedReplyEn, suggestedReplyRu) {
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare(`
+      UPDATE dialogue_sessions
+      SET suggested_reply_en = ?, suggested_reply_ru = ?
+      WHERE user_id = ?
+    `).run(suggestedReplyEn || '', suggestedReplyRu || '', id);
   }
 
   startDialogueSession(telegramId, scenarioId, maxTurns = 4) {
     const id = normalizeTelegramId(telegramId);
     const now = new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO dialogue_sessions (user_id, scenario_id, turn_index, max_turns, history_json, started_at)
-      VALUES (?, ?, 0, ?, '[]', ?)
+      INSERT INTO dialogue_sessions (user_id, scenario_id, turn_index, max_turns, history_json, suggested_reply_en, suggested_reply_ru, started_at)
+      VALUES (?, ?, 0, ?, '[]', NULL, NULL, ?)
       ON CONFLICT(user_id) DO UPDATE SET
         scenario_id = excluded.scenario_id,
         turn_index = 0,
         max_turns = excluded.max_turns,
         history_json = '[]',
+        suggested_reply_en = NULL,
+        suggested_reply_ru = NULL,
         started_at = excluded.started_at
     `).run(id, scenarioId, maxTurns, now);
   }
@@ -780,6 +821,48 @@ class DbStore {
   clearDialogueSession(telegramId) {
     const id = normalizeTelegramId(telegramId);
     this.db.prepare('DELETE FROM dialogue_sessions WHERE user_id = ?').run(id);
+  }
+
+  getSupportHistory(telegramId, limit = 10) {
+    const id = normalizeTelegramId(telegramId);
+    const rows = this.db.prepare(`
+      SELECT role, content FROM support_messages
+      WHERE user_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(id, limit);
+    return rows.reverse().map((row) => ({
+      role: row.role,
+      content: row.content,
+    }));
+  }
+
+  appendSupportMessage(telegramId, role, content, maxMessages = 10) {
+    const id = normalizeTelegramId(telegramId);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO support_messages (user_id, role, content, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(id, role, content, now);
+    this.trimSupportHistory(id, maxMessages);
+  }
+
+  trimSupportHistory(telegramId, maxMessages) {
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare(`
+      DELETE FROM support_messages
+      WHERE user_id = ? AND id NOT IN (
+        SELECT id FROM support_messages
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      )
+    `).run(id, id, maxMessages);
+  }
+
+  clearSupportHistory(telegramId) {
+    const id = normalizeTelegramId(telegramId);
+    this.db.prepare('DELETE FROM support_messages WHERE user_id = ?').run(id);
   }
 }
 

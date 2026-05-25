@@ -1,12 +1,14 @@
 const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
 const config = require('./config');
+const { getEnglishLocaleLabel } = require('./data/englishLocale');
 const { CB } = require('./keyboards');
 const { handleStart, handleChangeLevel, handleLevelCallback, handleTopicCallback } = require('./handlers/onboarding');
 const { handleDrillCommand, handleCallback, handleVoice, handleDrillText, extractVoiceFile } = require('./handlers/drill');
 const { handleStats, handleHelp, handleWeeklyTest, handlePhrases } = require('./handlers/commands');
 const { handleWordsCommand, handleVocabCallback } = require('./handlers/vocab');
 const { handleTalkCommand, handleTalkCallback, handleDialogueMessage, handleDialogueVoice } = require('./handlers/dialogue');
+const { handleReset, handleSupportMessage } = require('./handlers/support');
 const { startScheduler } = require('./scheduler/jobs');
 const { registerBotCommands } = require('./bot/commands');
 
@@ -32,6 +34,7 @@ function createBot() {
   const bot = new Telegraf(config.botToken);
 
   bot.start(handleStart);
+  bot.command('reset', handleReset);
   bot.command('level', handleChangeLevel);
   bot.command('drill', handleDrillCommand);
   bot.command('stats', handleStats);
@@ -63,8 +66,10 @@ function createBot() {
     return handleVoice(ctx);
   });
   bot.on(message('text'), async (ctx) => {
-    if (await handleDialogueMessage(ctx, ctx.message?.text?.trim())) return;
-    return handleDrillText(ctx);
+    const text = ctx.message?.text?.trim();
+    if (await handleDialogueMessage(ctx, text)) return;
+    if (await handleDrillText(ctx)) return;
+    if (await handleSupportMessage(ctx)) return;
   });
 
   bot.catch((err, ctx) => {
@@ -87,7 +92,9 @@ async function main() {
       config.openaiLlmEnabled ? `OpenAI LLM (${config.llmModel})` : null,
       config.deepseekLlmEnabled ? 'DeepSeek LLM' : null,
       config.sttEnabled ? 'Whisper STT' : null,
-      config.ttsEnabled ? 'OpenAI TTS' : null,
+      config.ttsEnabled
+        ? `OpenAI TTS (${config.openaiTtsModel}/${config.openaiTtsVoice}, ${getEnglishLocaleLabel(config.englishVariant)})`
+        : null,
     ].filter(Boolean).join(' + ') || 'no AI keys');
 
   console.log('Connecting to Telegram...');

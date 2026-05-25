@@ -1,10 +1,12 @@
 const store = require('../store');
 const { setState, OnboardingStates, DrillStates } = require('../fsm/manager');
 const { levelKeyboard, topicKeyboard } = require('../keyboards');
+const { resetSupportChat } = require('../services/support');
 
 async function handleStart(ctx) {
   const telegramId = ctx.from.id;
   store.ensureUser(telegramId);
+  resetSupportChat(telegramId);
   const user = store.getUser(telegramId);
 
   if (user.onboardingCompleted) {
@@ -16,7 +18,9 @@ async function handleStart(ctx) {
       + '/talk — role-play диалог по ситуации\n'
       + '/level — сменить уровень и тему\n'
       + '/stats — стрик и статистика\n'
-      + '/help — справка',
+      + '/help — справка\n'
+      + '/reset — сбросить историю чата с ассистентом\n\n'
+      + '💬 Можешь написать вопрос о боте обычным сообщением — я подскажу.',
     );
     return;
   }

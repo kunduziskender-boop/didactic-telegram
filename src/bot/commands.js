@@ -1,6 +1,7 @@
 /** Команды бота — отображаются в меню Telegram (кнопка «/»). */
 const BOT_COMMANDS = [
   { command: 'start', description: 'Начать и выбрать уровень' },
+  { command: 'reset', description: 'Сбросить историю чата с ассистентом' },
   { command: 'level', description: 'Сменить уровень и тему' },
   { command: 'drill', description: 'Получить задание дня' },
   { command: 'talk', description: 'Role-play диалог по ситуации' },

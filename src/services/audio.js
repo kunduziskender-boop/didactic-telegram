@@ -34,6 +34,7 @@ function pathsForSession(telegramId, dateKey) {
     responseWav: path.join(dir, 'response.wav'),
     corrected: path.join(dir, 'corrected.mp3'),
     followUpCorrected: path.join(dir, 'follow_up_corrected.mp3'),
+    dialogueHint: path.join(dir, 'dialogue_hint.mp3'),
   };
 }
 

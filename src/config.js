@@ -7,6 +7,8 @@ const useOpenAiEnv = process.env.USE_OPENAI?.trim().toLowerCase();
 const whisperEnv = process.env.WHISPER_ENABLED?.trim().toLowerCase();
 const ttsEnv = process.env.TTS_ENABLED?.trim().toLowerCase();
 const llmProvider = (process.env.LLM_PROVIDER || 'openai').trim().toLowerCase();
+const englishVariant = (process.env.ENGLISH_VARIANT || 'british').trim().toLowerCase();
+const { getDefaultTtsVoice, getDefaultElevenLabsVoiceId } = require('./data/englishLocale');
 
 // Whisper (STT) — OpenAI
 const sttEnabled = hasOpenAiKey && (
@@ -15,7 +17,7 @@ const sttEnabled = hasOpenAiKey && (
   || llmProvider === 'openai'
 );
 
-// TTS — озвучка заданий и Shadow (OpenAI tts-1)
+// TTS — озвучка заданий и Shadow (gpt-4o-mini-tts для британского акцента)
 const ttsEnabled = hasOpenAiKey && (
   useOpenAiEnv === 'true'
   || ttsEnv === 'true'
@@ -45,9 +47,11 @@ const config = {
   llmModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   llmTemperature: Number(process.env.LLM_TEMPERATURE ?? 0.3),
   llmMaxTokens: Number(process.env.LLM_MAX_TOKENS ?? 500),
-  englishVariant: (process.env.ENGLISH_VARIANT || 'british').trim().toLowerCase(),
+  englishVariant,
   openaiTtsModel: process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts',
-  openaiTtsVoice: process.env.OPENAI_TTS_VOICE || 'ballad',
+  openaiTtsVoice: process.env.OPENAI_TTS_VOICE?.trim() || getDefaultTtsVoice(englishVariant),
+  elevenLabsVoiceId: process.env.ELEVENLABS_VOICE_ID?.trim()
+    || getDefaultElevenLabsVoiceId(englishVariant),
   openaiLlmEnabled,
   deepseekLlmEnabled,
   sttEnabled,

@@ -29,7 +29,13 @@ async function sendDailyTask(telegram, telegramId, options = {}) {
 
   const task = store.selectTaskForUser(telegramId);
   if (!task) {
-    await telegram.sendMessage(telegramId, 'Задания для вашего уровня временно недоступны.');
+    const topicLabel = user?.topic || '—';
+    await telegram.sendMessage(
+      telegramId,
+      `Заданий для уровня **${user?.level || '?'}** и темы **${topicLabel}** пока нет.\n`
+      + 'Смени тему: /level → «Всё равно» или другую категорию.',
+      { parse_mode: 'Markdown' },
+    );
     return false;
   }
 

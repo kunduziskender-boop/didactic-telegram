@@ -27,13 +27,15 @@ Return ONLY valid JSON:
   "bot_reply_en": "YOUR character's next line in English",
   "bot_reply_ru": "brief Russian translation of bot_reply_en",
   "hint_ru": "what student could say next (Russian)",
+  "suggested_reply_en": "simple English phrase for student's NEXT turn after bot_reply_en (A1 = 4-8 words)",
+  "suggested_reply_ru": "Russian translation of suggested_reply_en",
   "is_final": false,
   "student_ok": true
 }
 
-student_ok = true if answer is acceptable for the scene (even imperfect English).
+suggested_reply_en/ru = ready-to-copy line for the student on the NEXT turn. Keep it short and level-appropriate.
 
-On the LAST turn: is_final=true, bot_reply_en closes the scene politely in character.`;
+On the LAST turn: is_final=true, bot_reply_en closes the scene politely in character. suggested_reply_en may be empty.`;
 
 function getDialogueSystemPrompt() {
   return `${DIALOGUE_SYSTEM_BASE}\n\n${getEnglishLocalePrompt(config.englishVariant)}`;
@@ -74,7 +76,7 @@ async function callDialogueJson(userContent) {
           { role: 'user', content: userContent },
         ],
         temperature: 0.2,
-        max_tokens: 350,
+        max_tokens: 450,
       });
       return JSON.parse(response.choices[0]?.message?.content || '{}');
     } catch (err) {
@@ -86,21 +88,169 @@ async function callDialogueJson(userContent) {
 
 function formatScenarioIntro(scenario) {
   return (
-    `🎭 **${scenario.titleRu}**\n\n`
+    `🎭 **${scenario.titleRu}** · Guided Talk\n\n`
     + `📍 ${scenario.settingRu}\n\n`
     + `👤 Ты: **${scenario.userRole}**\n`
     + `🤖 Собеседник: **${scenario.botRole}**\n\n`
     + `🇬🇧 **${scenario.botRole}:** ${scenario.openingEn}\n`
     + `🇷🇺 _${scenario.openingRu}_\n\n`
-    + `💬 Ответь **текстом** — так точнее всего.\n`
-    + `Голосом: 5–10 сек, громко и чётко.\n`
-    + `Диалог — **${DIALOGUE_TURNS} реплики**, потом краткий итог.`
+    + `Ниже — **готовая фраза**: скопируй, отправь или скажи вслух.\n`
+    + `Диалог — **${DIALOGUE_TURNS} реплики**. Ошибки — нормально.`
+  );
+}
+
+function formatGuidedSuggestion(en, ru) {
+  if (!en?.trim()) return '';
+  return (
+    '🗣 **Скажи так:**\n\n'
+    + `🇬🇧 ${en.trim()}\n`
+    + (ru?.trim() ? `🇷🇺 _${ru.trim()}_\n\n` : '\n')
+    + 'Скопируй и отправь — или скажи похожими словами.'
+  );
+}
+
+function getOpeningSuggestion(scenario) {
+  return {
+    suggestedReplyEn: scenario.firstReplyEn || "I'd like ..., please.",
+    suggestedReplyRu: scenario.firstReplyRu || 'Скажи простую фразу по ситуации.',
+  };
+}
+
+function fallbackSuggestedReply(scenario, turnIndex) {
+  const lines = {
+    cafe_order: [
+      'Hot, please.',
+      'Can I pay by card?',
+      'No, that\'s all. Thank you!',
+    ],
+    restaurant_dinner: [
+      'By the window, if possible.',
+      'Could we see the menu, please?',
+      'I\'ll have the soup, please.',
+    ],
+    hotel_checkin: [
+      'My name is Alex Smith.',
+      'Yes, here is my passport.',
+      'Thank you very much.',
+    ],
+  };
+  const pool = lines[scenario.id] || [
+    'Yes, please.',
+    'That sounds good.',
+    'Thank you!',
+  ];
+  const en = pool[Math.min(Math.max(turnIndex - 1, 0), pool.length - 1)];
+  return { suggestedReplyEn: en, suggestedReplyRu: 'Продолжи диалог простой фразой.' };
+}
+
+const CYRILLIC_RE = /[\u0400-\u04FF]/;
+
+function isDialogueHelpRequest(text) {
+  const t = (text || '').trim();
+  if (!t) return false;
+  return /(?:подскаж|как (?:сказать|спросить|ответить|на англий)|что (?:сказать|ответить|написать)|не понима|не знаю что|help me|how do i say|what should i say)/i.test(t);
+}
+
+function isRussianMetaMessage(text) {
+  const t = (text || '').trim();
+  if (!CYRILLIC_RE.test(t)) return false;
+  return isDialogueHelpRequest(t) || /^(?:а |ну )?(?:слушай|скажи|объясни|помоги)\b/i.test(t);
+}
+
+/** Russian or unrelated question during role-play — not a scene reply. */
+function isDialogueOffTopicMessage(text) {
+  const t = (text || '').trim();
+  if (!t || isDialogueHelpRequest(t)) return false;
+
+  const latinWords = (t.match(/\b[a-z]{2,}\b/gi) || []).length;
+  const cyrillicWords = (t.match(/[\u0400-\u04FF]+/g) || []).length;
+
+  // Mostly English — treat as attempt to speak in scene (LLM handles relevance)
+  if (latinWords >= 2 && cyrillicWords === 0) return false;
+
+  const isQuestion = /\?/.test(t)
+    || /^(?:кто|что|где|когда|почему|зачем|сколько|какой|какая|какие|как)\b/i.test(t);
+
+  const unrelatedRu = /(?:тестир|сайт|бот|ассистент|chatgpt|программ|код|погод|курс|рецепт|политик|зарплат|сколько\s+стоит)/i.test(t);
+  const toBotRu = /(?:^|\s)(?:ты|вы|у\s+тебя)\b/i.test(t);
+
+  if (isQuestion && (unrelatedRu || toBotRu) && cyrillicWords > 0) return true;
+
+  if (CYRILLIC_RE.test(t) && isQuestion && !looksLikeRolePlayIntentRu(t)) return true;
+
+  return false;
+}
+
+function looksLikeRolePlayIntentRu(text) {
+  return /(?:ищу|хочу|нужен|размер|мне\s+надо|можно|есть\s+ли|сколько\s+стоит\s+(?:это|размер|футболк|плать))/i.test(text);
+}
+
+function buildDialogueOffTopicResponse(scenario, session) {
+  const en = session?.suggestedReplyEn || scenario.firstReplyEn || 'I would like …, please.';
+  const ru = session?.suggestedReplyRu || scenario.firstReplyRu || '';
+
+  return (
+    '⚠️ **Вопрос не по теме диалога.**\n\n'
+    + `Сейчас сценарий **${scenario.titleRu}** — отвечай **репликой на английском**, как в этой ситуации.\n\n`
+    + '• Вопросы о боте, работе, IT — **после** диалога (заверши 🛑 или /reset → напиши в чат).\n'
+    + '• Подсказка по фразе — кнопка **💡 Подсказка** или «подскажи как сказать».\n\n'
+    + `🗣 **По сцене скажи:**\n🇬🇧 ${en}`
+    + (ru ? `\n🇷🇺 _${ru}_` : '')
+  );
+}
+
+function buildDialogueHelpResponse(scenario, history) {
+  const lastBotLine = [...(history || [])].reverse().find((h) => h.role === 'bot')?.text || scenario.openingEn;
+
+  const scenarioHints = {
+    cafe_order: {
+      en: "I'd like a cappuccino, please.",
+      ru: 'Я бы хотел(а) капучино, пожалуйста.',
+      alt: 'Can I have a latte to go?',
+    },
+    restaurant_dinner: {
+      en: 'Could we have a table for two, please?',
+      ru: 'Нам столик на двоих, пожалуйста.',
+      alt: "I'd like to order the soup, please.",
+    },
+    hotel_checkin: {
+      en: 'Yes, I have a reservation under Ivan Petrov.',
+      ru: 'Да, у меня бронь на имя Иван Петров.',
+      alt: 'I booked a double room for two nights.',
+    },
+    airport_gate: {
+      en: 'Excuse me, is this the gate for flight BA123?',
+      ru: 'Извините, это выход на рейс BA123?',
+      alt: 'Could you tell me if the flight is on time?',
+    },
+    job_interview: {
+      en: "I'm a software developer with three years of experience.",
+      ru: 'Я разработчик с тремя годами опыта.',
+      alt: "I'm passionate about building reliable products.",
+    },
+  };
+
+  const hint = scenarioHints[scenario.id] || {
+    en: 'I would like …, please.',
+    ru: 'Скажи простую фразу: I would like …, please.',
+    alt: 'Could you help me with …, please?',
+  };
+
+  return (
+    '💡 **Подсказка для сцены** (это не засчитывается как реплика)\n\n'
+    + `Собеседник сказал: _${lastBotLine}_\n\n`
+    + `🇬🇧 **Пример:** ${hint.en}\n`
+    + `🇷🇺 _${hint.ru}_\n`
+    + (hint.alt ? `\n🔄 **Ещё вариант:** ${hint.alt}\n` : '')
+    + '\nОтветь **на английском** — диалог продолжится.'
   );
 }
 
 function looksLikeValidStudentReply(userMessage, scenarioId) {
   const t = userMessage.trim().toLowerCase();
   if (t.length < 2) return false;
+  if (isDialogueHelpRequest(t) || isRussianMetaMessage(t) || isDialogueOffTopicMessage(t)) return false;
+  if (CYRILLIC_RE.test(t) && !/\b[a-z]{2,}\b/i.test(t)) return false;
   if (scenarioId === 'cafe_order' || scenarioId === 'restaurant_dinner') {
     return /\b(like|want|order|please|coffee|tea|latte|cappuccino|water|juice|milk|size|hot|iced|for here|to go|card|cash|thank)\b/i.test(t);
   }
@@ -180,6 +330,7 @@ function sanitizeDialogueTurn(result, scenario, userMessage, turnIndex) {
 
 function demoTurn(scenario, userMessage, turnIndex) {
   const isFinal = turnIndex >= DIALOGUE_TURNS;
+  const next = isFinal ? {} : fallbackSuggestedReply(scenario, turnIndex + 1);
   return {
     feedbackRu: 'Хорошо! Продолжаем диалог.',
     betterPhrase: '',
@@ -188,6 +339,8 @@ function demoTurn(scenario, userMessage, turnIndex) {
       : 'I see. And what else would you like to add?',
     botReplyRu: isFinal ? 'Завершение разговора.' : 'Собеседник ждёт продолжения.',
     hintRu: 'Скажи, что тебе нужно, простыми словами.',
+    suggestedReplyEn: next.suggestedReplyEn || '',
+    suggestedReplyRu: next.suggestedReplyRu || '',
     isFinal,
     demo: true,
   };
@@ -232,10 +385,17 @@ async function processDialogueTurn(scenario, history, userMessage, level, turnIn
       botReplyEn: raw.bot_reply_en || raw.botReplyEn || fallbackBotReply(scenario, turnIndex, userMessage),
       botReplyRu: raw.bot_reply_ru || raw.botReplyRu || '',
       hintRu: raw.hint_ru || raw.hintRu || '',
+      suggestedReplyEn: raw.suggested_reply_en || raw.suggestedReplyEn || '',
+      suggestedReplyRu: raw.suggested_reply_ru || raw.suggestedReplyRu || '',
       isFinal: Boolean(raw.is_final || raw.isFinal || isLastTurn),
       studentOk: Boolean(raw.student_ok || raw.studentOk),
       demo: false,
     };
+    if (!result.isFinal && !result.suggestedReplyEn?.trim()) {
+      const fb = fallbackSuggestedReply(scenario, turnIndex + 1);
+      result.suggestedReplyEn = fb.suggestedReplyEn;
+      result.suggestedReplyRu = fb.suggestedReplyRu;
+    }
     result = sanitizeDialogueTurn(result, scenario, userMessage, turnIndex);
     return result;
   } catch (err) {
@@ -261,7 +421,7 @@ function formatTurnFeedback(result, scenario) {
     lines.push(`🇷🇺 _${result.botReplyRu}_`);
   }
   if (!result.isFinal && result.hintRu) {
-    lines.push('', `💡 Подсказка: ${result.hintRu}`);
+    lines.push('', `💡 Идея: ${result.hintRu}`);
   }
   return lines.join('\n');
 }
@@ -280,8 +440,14 @@ function formatDialogueSummary(scenario, history) {
 module.exports = {
   DIALOGUE_TURNS,
   formatScenarioIntro,
+  formatGuidedSuggestion,
+  getOpeningSuggestion,
   processDialogueTurn,
   formatTurnFeedback,
   formatDialogueSummary,
   getScenarioById,
+  isDialogueHelpRequest,
+  isDialogueOffTopicMessage,
+  buildDialogueHelpResponse,
+  buildDialogueOffTopicResponse,
 };

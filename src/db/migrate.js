@@ -12,16 +12,25 @@ const SESSION_RESPONSE_COLUMNS = [
   ['follow_up_skipped', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
-function migrateSchema(database) {
-  const existing = new Set(
-    database.prepare('PRAGMA table_info(session_responses)').all().map((r) => r.name),
-  );
+const DIALOGUE_SESSION_COLUMNS = [
+  ['suggested_reply_en', 'TEXT'],
+  ['suggested_reply_ru', 'TEXT'],
+];
 
-  for (const [name, type] of SESSION_RESPONSE_COLUMNS) {
+function migrateTableColumns(database, table, columns) {
+  const existing = new Set(
+    database.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name),
+  );
+  for (const [name, type] of columns) {
     if (existing.has(name)) continue;
-    database.exec(`ALTER TABLE session_responses ADD COLUMN ${name} ${type}`);
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     existing.add(name);
   }
+}
+
+function migrateSchema(database) {
+  migrateTableColumns(database, 'session_responses', SESSION_RESPONSE_COLUMNS);
+  migrateTableColumns(database, 'dialogue_sessions', DIALOGUE_SESSION_COLUMNS);
 }
 
 module.exports = { migrateSchema };

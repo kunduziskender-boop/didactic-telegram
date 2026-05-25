@@ -370,35 +370,36 @@ async function handleMainText(ctx, text) {
 
 async function handleDrillText(ctx) {
   const text = ctx.message?.text?.trim();
-  if (!text || text.startsWith('/')) return;
+  if (!text || text.startsWith('/')) return false;
 
   const telegramId = ctx.from.id;
   const state = getState(telegramId);
 
   if (state === DrillStates.PROCESSING) {
     await ctx.reply('⏳ Уже обрабатываю предыдущий ответ, подожди немного.');
-    return;
+    return true;
   }
 
   if (state !== DrillStates.AWAITING_VOICE && state !== DrillStates.AWAITING_FOLLOWUP) {
-    return;
+    return false;
   }
 
   const user = store.getUser(telegramId);
-  if (!user?.onboardingCompleted) return;
+  if (!user?.onboardingCompleted) return false;
 
   const session = store.getTodaySession(telegramId);
-  if (!session) return;
+  if (!session) return false;
 
   if (state === DrillStates.AWAITING_FOLLOWUP) {
     await handleFollowUpText(ctx, text);
-    return;
+    return true;
   }
 
   const task = store.getTaskById(session.taskId);
-  if (!task) return;
+  if (!task) return false;
 
   await handleMainText(ctx, text);
+  return true;
 }
 
 async function handleVoice(ctx) {

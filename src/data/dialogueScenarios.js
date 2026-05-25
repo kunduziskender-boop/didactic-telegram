@@ -9,6 +9,8 @@ const SCENARIOS = [
     botRole: 'barista',
     openingEn: 'Hi! Welcome to Sunny Café. What can I get for you?',
     openingRu: 'Бариста спрашивает, что ты хочешь заказать.',
+    firstReplyEn: "I'd like a cappuccino, please.",
+    firstReplyRu: 'Я бы хотел(а) капучино, пожалуйста.',
   },
   {
     id: 'hotel_checkin',
@@ -20,6 +22,8 @@ const SCENARIOS = [
     botRole: 'receptionist',
     openingEn: 'Good evening! Have you got a reservation with us?',
     openingRu: 'Администратор спрашивает про бронь.',
+    firstReplyEn: 'Yes, I have a reservation under my name.',
+    firstReplyRu: 'Да, у меня бронь на моё имя.',
   },
   {
     id: 'job_interview',
@@ -31,6 +35,8 @@ const SCENARIOS = [
     botRole: 'interviewer',
     openingEn: 'Thanks for coming in. Could you tell me a little about yourself?',
     openingRu: 'Интервьюер просит коротко представиться.',
+    firstReplyEn: "I'm a developer with two years of experience.",
+    firstReplyRu: 'Я разработчик с двухлетним опытом.',
   },
   {
     id: 'airport_gate',
@@ -42,6 +48,8 @@ const SCENARIOS = [
     botRole: 'airport staff',
     openingEn: 'Hello! How can I help you at the gate today?',
     openingRu: 'Сотрудник аэропорта готов помочь.',
+    firstReplyEn: 'Excuse me, is this the gate for flight BA123?',
+    firstReplyRu: 'Извините, это выход на рейс BA123?',
   },
   {
     id: 'doctor_visit',
@@ -53,6 +61,8 @@ const SCENARIOS = [
     botRole: 'doctor',
     openingEn: 'Hi, I am Dr. Lee. What brings you in today?',
     openingRu: 'Врач спрашивает, что беспокоит.',
+    firstReplyEn: 'I have a headache and a sore throat.',
+    firstReplyRu: 'У меня головная боль и больное горло.',
   },
   {
     id: 'team_standup',
@@ -64,6 +74,8 @@ const SCENARIOS = [
     botRole: 'team lead',
     openingEn: 'Morning! What did you work on yesterday, and any blockers today?',
     openingRu: 'Тимлид спрашивает про вчерашние задачи.',
+    firstReplyEn: 'Yesterday I fixed a bug in the login page.',
+    firstReplyRu: 'Вчера я исправил(а) баг на странице входа.',
   },
   {
     id: 'shop_clothes',
@@ -75,6 +87,8 @@ const SCENARIOS = [
     botRole: 'shop assistant',
     openingEn: 'Hi there! Are you looking for anything specific today?',
     openingRu: 'Продавец спрашивает, что ищешь.',
+    firstReplyEn: "I'm looking for a blue T-shirt, size medium.",
+    firstReplyRu: 'Ищу синюю футболку, размер M.',
   },
   {
     id: 'restaurant_dinner',
@@ -86,6 +100,8 @@ const SCENARIOS = [
     botRole: 'waiter',
     openingEn: 'Good evening! Table for how many, please?',
     openingRu: 'Официант спрашивает, на сколько человек стол.',
+    firstReplyEn: 'A table for two, please.',
+    firstReplyRu: 'Столик на двоих, пожалуйста.',
   },
 ];
 

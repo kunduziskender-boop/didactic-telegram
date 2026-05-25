@@ -20,6 +20,8 @@ const CB = {
   VOCAB_RATE_GOOD: 'vocab:rate:2',
   TALK_RANDOM: 'talk:random',
   TALK_END: 'talk:end',
+  TALK_HINT: 'talk:hint',
+  TALK_LISTEN: 'talk:listen',
 };
 
 function levelKeyboard() {
@@ -112,6 +114,10 @@ function dialogueScenarioKeyboard(scenarios) {
 
 function dialogueActiveKeyboard() {
   return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('💡 Подсказка', CB.TALK_HINT),
+      Markup.button.callback('🎧 Послушать', CB.TALK_LISTEN),
+    ],
     [Markup.button.callback('🛑 Завершить диалог', CB.TALK_END)],
   ]);
 }

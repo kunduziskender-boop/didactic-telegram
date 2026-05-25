@@ -37,6 +37,24 @@ const SEED_TASKS = [
     promptRu: 'Кем ты работаешь? Тебе нравится твоя работа?',
   },
   {
+    level: 'A1',
+    topic: 'it',
+    promptEn: 'Do you use a computer or phone every day? What do you use it for?',
+    promptRu: 'Ты каждый день пользуешься компьютером или телефоном? Для чего?',
+  },
+  {
+    level: 'A1',
+    topic: 'it',
+    promptEn: 'What is your favorite app or website? Why do you like it?',
+    promptRu: 'Какое приложение или сайт тебе нравится больше всего? Почему?',
+  },
+  {
+    level: 'A1',
+    topic: 'it',
+    promptEn: 'Can you send an email or a message in English? What do you usually write?',
+    promptRu: 'Ты умеешь отправлять email или сообщения? Что обычно пишешь?',
+  },
+  {
     level: 'A2',
     topic: 'daily',
     promptEn: 'Tell me about your morning routine. What do you usually do after you wake up?',
@@ -65,6 +83,24 @@ const SEED_TASKS = [
     topic: 'travel',
     promptEn: 'Describe your last trip. Where did you go and what did you like most?',
     promptRu: 'Опиши своё последнее путешествие. Куда ты ездил и что понравилось больше всего?',
+  },
+  {
+    level: 'A2',
+    topic: 'business',
+    promptEn: 'What do you do at work or study? Describe a typical day in simple words.',
+    promptRu: 'Чем ты занимаешься на работе или учёбе? Опиши типичный день простыми словами.',
+  },
+  {
+    level: 'A2',
+    topic: 'it',
+    promptEn: 'Describe your desk or home setup. What devices do you use for work or study?',
+    promptRu: 'Опиши своё рабочее место или домашний сетап. Какие устройства используешь?',
+  },
+  {
+    level: 'A2',
+    topic: 'it',
+    promptEn: 'What technology makes your life easier? Give one or two examples.',
+    promptRu: 'Какие технологии упрощают тебе жизнь? Приведи один-два примера.',
   },
   {
     level: 'B1',

@@ -124,9 +124,22 @@ CREATE TABLE IF NOT EXISTS dialogue_sessions (
   turn_index INTEGER NOT NULL DEFAULT 0,
   max_turns INTEGER NOT NULL DEFAULT 4,
   history_json TEXT NOT NULL DEFAULT '[]',
+  suggested_reply_en TEXT,
+  suggested_reply_ru TEXT,
   started_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(telegram_id)
 );
+
+CREATE TABLE IF NOT EXISTS support_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_support_user_id ON support_messages(user_id, id);
 `;
 
 module.exports = { SCHEMA_SQL };
