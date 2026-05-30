@@ -12,6 +12,7 @@ const {
 const { getSupportLlmClient, getSupportModel } = require('./client');
 const { SUPPORT_TEMPERATURE, SUPPORT_MAX_TOKENS, MAX_HISTORY_MESSAGES } = require('./constants');
 const { isRecoverableAiError } = require('../openaiClient');
+const { retrieveSupportContext } = require('./retrieval');
 
 /**
  * @param {number} telegramId
@@ -44,8 +45,31 @@ async function generateSupportReply(telegramId, userMessage) {
   }
 
   const history = store.getSupportHistory(telegramId);
+  let retrieval;
+  try {
+    retrieval = await retrieveSupportContext(sanitized);
+  } catch (err) {
+    console.error('Support retrieval error:', err.message);
+    retrieval = { chunks: [], contextText: '', available: false };
+  }
+
+  if (retrieval.available && retrieval.chunks.length === 0) {
+    const noContextText = (
+      'Не могу честно ответить: в моей базе знаний сейчас нет релевантной информации по этому вопросу.\n\n'
+      + 'Попробуй уточнить формулировку или открой /help с командами.'
+    );
+    store.appendSupportMessage(telegramId, 'user', sanitized, MAX_HISTORY_MESSAGES);
+    store.appendSupportMessage(telegramId, 'assistant', noContextText, MAX_HISTORY_MESSAGES);
+    return { text: noContextText, source: 'rag_no_context' };
+  }
+
+  const ragInstruction = retrieval.contextText
+    ? `Ниже блок RAG_CONTEXT с фактами из базы знаний. Используй ТОЛЬКО эти факты по продукту.\nЕсли ответа нет в RAG_CONTEXT, честно скажи, что в базе знаний нет данных, и предложи /help.\n\nRAG_CONTEXT:\n${retrieval.contextText}`
+    : '';
+
   const messages = [
     { role: 'system', content: getSupportSystemPrompt() },
+    ...(ragInstruction ? [{ role: 'system', content: ragInstruction }] : []),
     ...history.map((item) => ({ role: item.role, content: item.content })),
     { role: 'user', content: sanitized },
   ];
@@ -71,7 +95,7 @@ async function generateSupportReply(telegramId, userMessage) {
     store.appendSupportMessage(telegramId, 'user', sanitized, MAX_HISTORY_MESSAGES);
     store.appendSupportMessage(telegramId, 'assistant', text, MAX_HISTORY_MESSAGES);
 
-    return { text, source: 'llm' };
+    return { text, source: retrieval.contextText ? 'rag_llm' : 'llm' };
   } catch (err) {
     console.error('Support LLM error:', err.message);
     if (isRecoverableAiError(err)) {
